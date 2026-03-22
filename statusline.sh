@@ -6,25 +6,53 @@ input=$(cat)
 MODEL=$(echo "$input" | jq -r '.model.display_name')
 
 # Check subscription type and username from credentials
-SUB_TYPE=$(jq -r '.claudeAiOauth.subscriptionType // "unknown"' ~/.claude/.credentials.json 2>/dev/null)
+# Primary: subscriptionType from credentials file (pro/max/team/enterprise)
+# Fallback: billingType from claude.json (stripe_subscription/apple_subscription/etc.)
+SUB_TYPE=$(jq -r '.claudeAiOauth.subscriptionType // empty' ~/.claude/.credentials.json 2>/dev/null)
+BILLING_METHOD=$(jq -r '.oauthAccount.billingType // empty' ~/.claude.json 2>/dev/null)
+ORG_NAME=$(jq -r '.oauthAccount.organizationName // empty' ~/.claude.json 2>/dev/null)
 EMAIL=$(jq -r '.oauthAccount.emailAddress // ""' ~/.claude.json 2>/dev/null)
 USERNAME=$(echo "$EMAIL" | cut -d'@' -f1)
 
-case "$SUB_TYPE" in
+# Determine display label: prefer subscriptionType, then infer from billingType
+if [ -n "$SUB_TYPE" ]; then
+    PLAN="$SUB_TYPE"
+else
+    case "$BILLING_METHOD" in
+        stripe_subscription|stripe_subscription_contracted|apple_subscription|google_play_subscription)
+            if [ -n "$ORG_NAME" ]; then
+                PLAN="team"
+            else
+                PLAN="pro"
+            fi
+            ;;
+        workspace_billing)
+            PLAN="enterprise"
+            ;;
+        *)
+            PLAN="api"
+            ;;
+    esac
+fi
+
+case "$PLAN" in
     "pro")
-        BILLING_TYPE="\033[38;5;114mPro\033[0m"  # Pastel Green for Pro
+        BILLING_TYPE="\033[38;5;114mPro\033[0m"         # Pastel Green
         ;;
     "max")
-        BILLING_TYPE="\033[38;5;114mMax\033[0m"  # Pastel Green for Max
+        BILLING_TYPE="\033[38;5;114mMax\033[0m"         # Pastel Green
         ;;
     "team")
-        BILLING_TYPE="\033[38;5;114mTeam\033[0m"  # Pastel Green for Team
+        BILLING_TYPE="\033[38;5;114mTeam\033[0m"        # Pastel Green
+        ;;
+    "enterprise")
+        BILLING_TYPE="\033[38;5;141mEnterprise\033[0m"  # Light Purple
         ;;
     "free")
-        BILLING_TYPE="\033[90mFree\033[0m"  # Gray for Free
+        BILLING_TYPE="\033[90mFree\033[0m"              # Gray
         ;;
     *)
-        BILLING_TYPE="\033[38;5;223mAPI\033[0m"  # Peach for API/Unknown
+        BILLING_TYPE="\033[38;5;223mAPI\033[0m"         # Peach
         ;;
 esac
 CONTEXT_SIZE=$(echo "$input" | jq -r '.context_window.context_window_size')
