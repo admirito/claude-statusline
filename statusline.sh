@@ -5,6 +5,16 @@ input=$(cat)
 # Extract core values
 MODEL=$(echo "$input" | jq -r '.model.display_name')
 
+# Effort level from settings (braille dots: ⠁=low ⠃=medium ⠇=high ⣿=max)
+EFFORT=$(jq -r '.effortLevel // "high"' ~/.claude/settings.json 2>/dev/null)
+case "$EFFORT" in
+    "low")    EFFORT_ICON="⠁" ;;
+    "medium") EFFORT_ICON="⠃" ;;
+    "high")   EFFORT_ICON="⠇" ;;
+    "max")    EFFORT_ICON="⣿" ;;
+    *)        EFFORT_ICON="∅" ;;
+esac
+
 # Check subscription type and username from credentials
 # Primary: subscriptionType from credentials file (pro/max/team/enterprise)
 # Fallback: billingType from claude.json (stripe_subscription/apple_subscription/etc.)
@@ -208,4 +218,4 @@ if [ -n "$USERNAME" ]; then
 else
     USER_INFO=""
 fi
-echo -e "[${USER_INFO}\033[38;5;117m${MODEL}\033[0m|${BILLING_TYPE}] ${GIT_INFO} | ${DURATION} | ${API_INFO} | ${LINES_INFO} | ${COST_INFO} | ${CURRENT_K}K/${CONTEXT_K}K [${PROGRESS_BAR}] ${CACHE_COMPACT} ↗${OUTPUT_K}K"
+echo -e "[${USER_INFO}\033[38;5;117m${MODEL}\033[0m${EFFORT_ICON}|${BILLING_TYPE}] ${GIT_INFO} | ${DURATION} | ${API_INFO} | ${LINES_INFO} | ${COST_INFO} | ${CURRENT_K}K/${CONTEXT_K}K [${PROGRESS_BAR}] ${CACHE_COMPACT} ↗${OUTPUT_K}K"
