@@ -3,14 +3,30 @@
 input=$(cat)
 
 # Extract core values
-MODEL=$(echo "$input" | jq -r '.model.display_name')
+# Strip " context" inside parens: "Opus 4.7 (1M context)" → "Opus 4.7 (1M)"
+MODEL=$(echo "$input" | jq -r '.model.display_name' | sed -E 's/\(([^)]+) context\)/(\1)/')
 
-# Effort level from settings (braille dots: ⠁=low ⠃=medium ⠇=high ⣿=max)
-EFFORT=$(jq -r '.effortLevel // "high"' ~/.claude/settings.json 2>/dev/null)
+# Effort level (braille dots: ⠁=low ⠃=medium ⠇=high ⡇=xhigh ⣿=max)
+# Source priority:
+#   1. Session transcript: captures "max", which the persisted setting cannot
+#      represent, because its validator rejects that value.
+#   2. settings.json .effortLevel, for a fresh session or before any /model
+#      change.
+# Anchor on ANSI-bolded /model stdout to avoid matching quoted text in tool
+# outputs or assistant messages.
+TRANSCRIPT=$(echo "$input" | jq -r '.transcript_path // empty')
+EFFORT=""
+if [ -r "$TRANSCRIPT" ]; then
+    EFFORT=$(grep -oE 'local-command-stdout>Set model to \\u001b\[1m[^<]*effort' "$TRANSCRIPT" 2>/dev/null \
+        | tail -1 \
+        | sed -nE 's/.*\\u001b\[1m([a-zA-Z]+)\\u001b\[22m[[:space:]]+effort.*/\1/p')
+fi
+EFFORT="${EFFORT:-$(jq -r '.effortLevel // "high"' ~/.claude/settings.json 2>/dev/null)}"
 case "$EFFORT" in
     "low")    EFFORT_ICON="⠁" ;;
     "medium") EFFORT_ICON="⠃" ;;
     "high")   EFFORT_ICON="⠇" ;;
+    "xhigh")  EFFORT_ICON="⡇" ;;
     "max")    EFFORT_ICON="⣿" ;;
     *)        EFFORT_ICON="∅" ;;
 esac
