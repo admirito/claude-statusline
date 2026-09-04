@@ -202,9 +202,12 @@ context_colour() {
     fi
 }
 
-truthy() { case ${1,,} in 1|true|yes|on) return 0 ;; *) return 1 ;; esac }
+# Lowercasing via tr, not ${1,,}, and a date fallback for EPOCHSECONDS: macOS
+# ships bash 3.2 as /bin/bash, where both are unavailable. An empty NOW is the
+# worse of the two, since every reset countdown then measures from the epoch.
+truthy() { case $(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]') in 1|true|yes|on) return 0 ;; *) return 1 ;; esac }
 
-NOW=$EPOCHSECONDS
+NOW=${EPOCHSECONDS:-$(date +%s)}
 
 # ------------------------------------------ account facts and settings, 1x ---
 # Not in the payload, so read from disk, all files in one pass. Identity is
