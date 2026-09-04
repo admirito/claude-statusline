@@ -160,11 +160,25 @@ fmt_until() {
     fi
 }
 
+# Promote the unit rather than let the number grow: seconds only below a minute
+# (a whole minute reading "0m" is worse), then minutes to 99, hours to 99, then
+# days. Seconds are noise in a figure that is glanced at, and "883m41s" spends
+# seven columns saying what "15h" says in three.
 fmt_duration() {
-    local sec=$(( ${1:-0} / 1000 )) min
-    min=$((sec / 60))
-    if (( min > 0 )); then printf '%dm%ds' "$min" $((sec % 60))
-    else printf '%ds' "$sec"; fi
+    local sec=$(( ${1:-0} / 1000 )) m h
+    (( sec < 60 )) && { printf '%ds' "$sec"; return; }
+    m=$(( (sec + 30) / 60 ))
+    (( m <= 99 )) && { printf '%dm' "$m"; return; }
+    h=$(( (sec + 1800) / 3600 ))
+    (( h <= 99 )) && { printf '%dh' "$h"; return; }
+    printf '%dd' $(( (sec + 43200) / 86400 ))
+}
+
+# Not ${x^}: that expansion is bash 4 only, and macOS ships bash 3.2 as
+# /bin/bash. It fails at runtime, not at parse time, so an untested branch
+# carrying it looks fine until the day it runs.
+ucfirst() {
+    printf '%s%s' "$(printf '%s' "${1:0:1}" | tr '[:lower:]' '[:upper:]')" "${1:1}"
 }
 
 # Degrade a long ref in the order of how little the dropped part is worth: keep
@@ -259,7 +273,7 @@ case $PLAN in
     "")         PLAN_TXT="${C_PLAN_API}API${R}" ;;
     # A tier this script has not heard of is still a subscription; labelling it
     # API would demote a paying user on the day Anthropic adds one.
-    *)          PLAN_TXT="${C_PLAN}${PLAN^}${R}" ;;
+    *)          PLAN_TXT="${C_PLAN}$(ucfirst "$PLAN")${R}" ;;
 esac
 
 USER_TXT=""
@@ -293,7 +307,7 @@ if [ -n "$P_style" ] && [ "$P_style" != "default" ]; then
         Explanatory) MODES+='※' ;;
         Learning)    MODES+='✎' ;;
         Proactive)   MODES+='»' ;;
-        *)           I=${P_style:0:1}; MODES+="${I^}" ;;  # custom: any name
+        *)           MODES+="$(ucfirst "${P_style:0:1}")" ;;  # custom: any name
     esac
 fi
 [ -n "$P_vim" ]    && MODES+="${P_vim:0:1}"
@@ -465,9 +479,11 @@ if [ -n "$P_pc_observed" ]; then
 fi
 
 # ------------------------------------------------------------------ output ---
-printf '[%s%s%s%s|%s]%s %s%s | %s | %s | %s | %s%s | %s%s ↗%s\n' \
+# Grouped by what the numbers describe rather than by field: working tree
+# (branch, PR, lines changed), elapsed time, spend, then context and cache.
+printf '[%s%s%s%s|%s]%s %s%s %s | %s %s | %s%s | %s%s ↗%s\n' \
     "$USER_TXT" "$C_MODEL" "$MODEL_TXT" "${R}${EFFORT_TXT}" "$PLAN_TXT" \
-    "$MODES_TXT" "$GIT_TXT" "$PR_TXT" \
-    "$DUR_TXT" "$API_TXT" "$LINES_TXT" \
+    "$MODES_TXT" "$GIT_TXT" "$PR_TXT" "$LINES_TXT" \
+    "$DUR_TXT" "$API_TXT" \
     "$COST_TXT" "$LIMIT_TXT" \
     "$CTX_TXT" "$CACHE_TXT" "$(fmt_tokens "${P_out_tok:-0}")"
