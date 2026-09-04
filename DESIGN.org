@@ -1,0 +1,195 @@
+#+TITLE: Design notes
+#+OPTIONS: toc:2 num:nil
+
+Why the line looks the way it does. Every display decision below was made field
+by field against the data Claude Code actually sends, and several fields were
+examined and then deliberately left off.
+
+* Principles
+
+1. *Quiet by default, escalate when it matters.* A number you cannot act on is
+   noise. Windows past the first appear only above 75%, cache alarms only when
+   the cache is about to cost something, mode flags only when a mode is on.
+2. *One fact in one place.* The context window size sits beside the token count
+   it scales, not also in the model badge. Lines changed sits beside the branch,
+   because both describe the working tree.
+3. *Absence is not zero.* Several fields are omitted from the payload rather
+   than sent as zero, and rendering a confident =0%= for "not known yet" is worse
+   than rendering nothing.
+4. *Muted constants, coloured variables.* The =⧗= icon and a pull request number
+   never change; the percentage and the review state do. Only the second kind
+   takes colour.
+
+* Fields shown
+
+** Rate limits
+
+The payload carries a 5-hour window and a weekly window for Claude.ai
+subscribers, each with a used percentage and the instant it resets. Behind a
+gateway it may also carry a spend limit.
+
+The 5-hour window is always shown, *with its reset countdown*, because the
+percentage is not interpretable without it: 24% burned with four hours left and
+24% with twenty minutes left are opposite situations, and only the second means
+you can spend freely. The countdown gains minute resolution past 50%, where
+"coffee or lunch" becomes a real question; below an hour it is minutes anyway.
+
+Other windows appear only past 75% and stay coarse. Three days versus three days
+and four hours changes nothing you would do.
+
+Colour bands: below 50 gray, 50–75 white, then yellow, orange and red at 75, 85
+and 95. Percentages arrive as floats and are rounded.
+
+The whole segment disappears when the field is absent, which is every session
+before its first API response, and always on API-key, Bedrock and Vertex auth.
+
+** Context window
+
+Two numbers and a bar. The token count is input only: prompt tokens plus both
+cache counters, matching how Claude Code computes its own percentage.
+
+The percentage is *not* the raw fraction of the window. Compaction fires a fixed
+number of tokens below the end of the window, not at a fixed fraction of it, so
+the reserve is subtracted as a constant. This matters: a divisor tuned on a 200K
+window overstates usage on a 1M window by about a third, because the reserve is
+roughly a fifth of the small window and a twentieth of the large one. The
+reserve differs slightly depending on whether auto-compact is enabled, since a
+hard block sits closer to the end than the compaction trigger does.
+
+=autoCompactEnabled= is resolved the way Claude Code resolves it: any settings
+file that defines it wins in precedence order, otherwise the legacy value in
+=~/.claude.json=, otherwise enabled. The =DISABLE_AUTO_COMPACT= and
+=DISABLE_COMPACT= environment variables force it off.
+
+Both token figures use one formatter that picks its unit from the magnitude, so
+=1000000= renders =1M= rather than =1000K= and a future window size stays correct.
+
+** Prompt cache
+
+=hit_ratio= counts cache reads against *all* input tokens for the session,
+uncached input included. That is a lower and more honest number than a
+per-request ratio of reads to writes, which flatters itself by leaving uncached
+input out of the denominator and reads =N/A= until the first cache write.
+
+Three conditional alarms:
+
+- =⏱= when the cached prefix expires within 15 minutes. Long enough to decide
+  whether to send now or accept the rebuild, short enough to stay silent nearly
+  always.
+- =❄= when the cache has gone cold, with the number of tokens the next request
+  re-caches. This is the one figure on the line denominated in money.
+- =✗= when the session has recorded cache misses that a compaction does not
+  explain, which means something is invalidating the prefix.
+
+An absent =prompt_cache= object is *unknown*, not cold, and must not render =❄=.
+Statistics cover the main conversation only; subagent requests are excluded.
+
+** Effort and fast mode
+
+Shape carries the effort level, colour carries fast mode. Two orthogonal facts
+in one cell at no width cost. Rendering only the true state of fast mode also
+sidesteps an ambiguity: a false value conflates "off", "this model has no fast
+mode" and "temporarily unavailable".
+
+The effort field is absent for models with no effort control, which is not the
+same as unknown, so it renders =∅= rather than a level.
+
+** Branch, worktree, pull request
+
+Long branch names are degraded in the order of how little the dropped part is
+worth: kept whole if they fit, otherwise each prefix segment is abbreviated to
+one character, otherwise the tail is cut. =feature/PAY-4821-idempotent-refunds=
+becomes =f/PAY-4821-idem…=.
+
+A Claude worktree session checks out a branch named after the worktree with a
+prefix; the short name from the payload says the same thing in seven fewer
+columns. A plain linked git worktree gets a different glyph, because it is a
+different situation.
+
+The branch turns orange when the working directory has left the project
+directory, since the branch shown then describes a repository the session does
+not think it is in.
+
+Pull request state uses a glyph rather than a word, and only the glyph is
+coloured. GitLab merge requests are written =!123=, which is that platform's own
+convention, not =#123=.
+
+** Modes cluster
+
+Output style, vim mode, agent, remote attachment and extra directories are all
+non-default session states, all absent by default, and all rendered in one
+colour so five columns do not become five hues. Built-in output styles get a
+dedicated glyph; a custom style falls back to its initial, so a style invented
+later still renders sensibly.
+
+* Fields deliberately not shown
+
+| Field                  | Why not                                                       |
+|------------------------+---------------------------------------------------------------|
+| =thinking.enabled=      | On models where effort and thinking are coupled it is constant, and where it would differ the effort glyph already shows it |
+| =exceeds_200k_tokens=   | Exactly derivable from the token count already displayed       |
+| =version=               | Static for the session, and there is no update-available signal to make it actionable |
+| =session_name=          | Unbounded width in a line kept narrow                          |
+| =session_id=, =prompt_id= | Nothing a human acts on                                      |
+| =workspace.repo=        | Restates what the branch and the terminal title already say    |
+
+=session_id= was also considered as a cache key for the two git calls, and
+rejected: git state changes without a new session, so a cached branch or dirty
+flag would render a confidently wrong line, and the calls are milliseconds.
+
+* Cost
+
+One =jq= pass for the payload and one for the account and settings files, plus
+two =git= calls. The payload pass emits key/value pairs rather than a fixed
+sequence, so adding a field later cannot silently shift every value after it.
+
+* Bugs worth remembering
+
+Found while building this, all of them the kind that pass a happy-path test:
+
+1. *=false // true= in jq is =true=.* =//= is the alternative operator, not a
+   null-coalesce, and it treats =false= as empty. A =last // true= default
+   silently overrode an explicit =false= setting.
+2. *=GIT_DIR= is git's own environment variable.* A shell variable of that name
+   is read by every =git= call as the path to a =.git= directory, and if one ever
+   arrives exported the branch segment reads =no-git= forever.
+3. *=git branch --show-current= prints nothing on a detached HEAD*, which is the
+   state during a conflicted rebase or a bisect: exactly when the branch matters
+   most. Fall back to the short SHA.
+4. *=printf '%.0f' abc || printf '0'= yields =00=.* Bash's printf already prints
+   =0= for an unparsable value *and* returns non-zero, so the fallback corrupts
+   the field it was meant to protect.
+5. *=git diff-index= compares stale stat data*; =git diff --quiet HEAD --=
+   refreshes the index as it goes, at the same cost. Both exit 128 outside a
+   repository, so test for exit 1 specifically rather than for non-zero.
+6. *Numeric parsing follows the locale.* Under a comma-decimal locale
+   =printf '%.2f' 4.82= stops at the dot and yields =4.00=. Unset =LC_ALL=, which
+   would mask the fix, and export =LC_NUMERIC=C=; leave string handling in the
+   UTF-8 locale so =${#name}= counts characters rather than bytes.
+7. *A float in =$(( ))= is a syntax error* that abandons the rest of the
+   enclosing compound command, blanking part of the line rather than failing
+   loudly. Floor integer fields in jq.
+8. *=jq -s= indexes by position*, so a missing file shifts every later file up
+   and silently disables whatever depended on the last one. Select by shape.
+9. *=${x^}= and =${x,,}= are bash 4.* They fail at runtime, not at parse time, so
+   an untested branch carrying one looks fine until the day it runs. macOS ships
+   bash 3.2.
+
+* Known limitations
+
+- Untracked files never earn the dirty marker; neither =git diff= nor
+  =diff-index= sees them.
+- The overage-included weekly window is read if it ever appears, but Claude Code
+  does not currently put it in the status line payload. The slot is absent-safe
+  and costs nothing.
+- Several glyphs are East Asian /Ambiguous/ width: one column in a Latin-locale
+  terminal, two in a CJK-configured one.
+
+* The assumption most likely to drift
+
+The context reserve assumes compaction fires a fixed number of tokens below the
+window. That figure is not part of any published contract and was worked out by
+inspection, so it can change in any release. Claude Code also has a background
+pre-computation path that may begin earlier. If that path ever gates compaction itself, a large window would
+compact sooner than this script predicts and the bar would overstate the
+headroom. It is not detectable from the payload.

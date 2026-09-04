@@ -1,0 +1,128 @@
+#+TITLE: claude-statusline
+#+OPTIONS: toc:nil num:nil
+
+A status line for [[https://claude.com/claude-code][Claude Code]] that fits a lot into a narrow line, and stays
+quiet until something needs your attention.
+
+#+begin_example
+[alice|Opus 5⡇|Max] main +156/-23 | ⌚15h Ⓐ61m | $4.82 ⧗24%→3h | 312K/1M [####--------32%] ⚡91% ↗12K
+#+end_example
+
+Everything that can be silent is silent. Rate limit windows past the first
+appear only once they constrain you, cache alarms appear only when the cache is
+about to cost you something, and the session-mode flags are absent entirely
+unless a mode is on. A healthy session is the line above; a session in trouble
+says so without you going looking.
+
+* Provenance
+
+Almost none of this shell script is mine. It was written by Claude, in Claude
+Code, across a long conversation in which I picked what to display field by
+field, pushed back on the recommendations, and reviewed the result. The design
+decisions are mine; the code is very largely not. The early commits are
+snapshots reconstructed from files I had kept, so they carry no trailer and
+should not be read as mine either.
+
+I mention it because you are about to run it, and you should know what you are
+reading.
+
+* What it shows
+
+| Segment            | Meaning                                                              |
+|--------------------+----------------------------------------------------------------------|
+| =alice=            | account, from the signed-in email                                    |
+| =Opus 5=           | model                                                                |
+| =⡇=                | reasoning effort: =⡀= low =⡄= medium =⡆= high =⡇= xhigh =⣿= max, =∅= if the model has none |
+| (gold =⡇=)         | fast mode is on                                                      |
+| =Max=              | plan                                                                 |
+| =main +156/-23=    | branch and lines changed, both working-tree state                    |
+| =⌚15h Ⓐ61m=       | session elapsed, and how much of it was spent waiting on the API     |
+| =$4.82=            | session cost                                                         |
+| =⧗24%→3h=          | 5-hour rate limit window used, and when it resets                    |
+| =312K/1M […32%]=   | context used against the window, and against the compaction threshold |
+| =⚡91%=             | prompt cache hit ratio for this session                              |
+| =↗12K=             | output tokens produced                                               |
+
+** Appears only when it matters
+
+| Flag              | Meaning                                                     |
+|-------------------+-------------------------------------------------------------|
+| =W82%→3d=         | weekly rate limit window, shown past 75%                     |
+| =⏱7m=             | prompt cache goes cold in under 15 minutes                   |
+| =❄312K=           | cache is cold; that many tokens get re-cached on the next request |
+| =✗2=              | cache misses this session that a compaction does not explain |
+| =#1234✓=          | pull request and review state (=✓= approved =⋯= pending =✗= changes requested =◌= draft); GitLab merge requests render as =!1234= |
+| =⎇name= / =⑂branch= | a Claude worktree session, or any other linked git worktree |
+| =≡ ※ ✎ »=         | output style: Concise, Explanatory, Learning, Proactive      |
+| =N I V=           | vim mode; the first letter only, so both visual modes read =V= |
+| =@=               | running as a named agent                                     |
+| =⧉=               | the session is attached to a remote                          |
+| =③=               | extra working directories                                    |
+| orange branch     | the working directory has left the project directory         |
+
+* Requirements
+
+- =bash= 3.2 or newer. macOS ships 3.2 as =/bin/bash=; the script stays inside
+  that dialect deliberately.
+- =jq=
+- =git=, optional. Without it the branch segment reads =no-git=.
+- Claude Code 2.1.251 or newer for the cache and spend-limit fields. Older
+  versions render everything else and simply omit those.
+
+* Install
+
+#+begin_src sh
+git clone https://github.com/admirito/claude-statusline ~/src/claude-statusline
+ln -s ~/src/claude-statusline/statusline.sh ~/.claude/statusline.sh
+#+end_src
+
+Then in =~/.claude/settings.json=:
+
+#+begin_src json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "~/.claude/statusline.sh",
+    "refreshInterval": 30
+  }
+}
+#+end_src
+
+=refreshInterval= is optional but recommended. Claude Code re-renders on session
+events and schedules a wake-up when a rate limit window resets or the cache
+expires, so most of the line is live without it. The countdowns are not: they
+matter while you are idle, which is exactly when no event fires.
+
+* What it reads
+
+Beyond the JSON payload on stdin, the script reads up to six files, all
+read-only:
+
+| File                                  | For                                        |
+|---------------------------------------+--------------------------------------------|
+| =~/.claude/.credentials.json=          | =subscriptionType=, to label the plan       |
+| =~/.claude.json=                       | email, billing type, legacy auto-compact setting |
+| =~/.claude/settings.json= and project settings | the auto-compact setting            |
+| =/etc/claude-code/managed-settings.json= | the same, if an administrator set one     |
+
+It touches your credentials file because that is the only place the plan tier is
+recorded, and it takes exactly one string from it. Nothing is written, nothing
+leaves the machine, and no network call is made. If you would rather it did not,
+delete =~/.claude/.credentials.json= from the =CFG= list near the top of the
+account block; the plan badge then falls back to billing type, which cannot tell
+Pro from Max.
+
+* Configuration
+
+There is no config file. The knobs are constants at the top of the script:
+the colour palette, =BRANCH_MAX= for branch name shortening, and the threshold
+tables in =limit_colour= and =context_colour=.
+
+* Design
+
+[[file:DESIGN.org][DESIGN.org]] records what each field means, why several fields are deliberately
+not displayed, and the bugs found while building it.
+
+* License
+
+MIT. See [[file:LICENSE][LICENSE]].
