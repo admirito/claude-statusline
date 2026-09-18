@@ -1,7 +1,25 @@
 #!/bin/bash
-# Claude Code status line, v4.
+# Claude Code status line, v5.
 #
-# What changed from v3, and why:
+# What changed from v4, and why:
+#
+#   * the cache countdown is on the whole time the cache is warm, not only in
+#     its last 15 minutes. The question it answers is "can I leave my desk",
+#     and that gets asked at 45 minutes too. Two or three characters, coloured
+#     by the fraction of the TTL already spent rather than by minutes left, so
+#     a 5-minute TTL (API keys, most Bedrock and Vertex sessions) reads
+#     sensibly instead of alarming for its whole life.
+#   * cache misses name their cause, for five minutes. Claude Code 2.1.260
+#     diagnoses each miss (tools changed, system prompt changed, /model, idle
+#     past the TTL...) but reports only the latest one, so a small per-session
+#     journal in the runtime directory keeps the last five minutes of them.
+#     That journal is the only thing this script writes.
+#   * a miss is a receipt, not an alarm: by the time it shows, the rebuild has
+#     already been paid for. Yellow while a cause is still on the line, gray
+#     once the last one has aged out. The count stays for the session,
+#     matching the figure /cost shows.
+#
+# What changed from v3 to v4, and why:
 #
 #   * effort comes from .effort.level instead of grepping the transcript. v3
 #     scanned a growing multi-megabyte JSONL on every render to learn something
@@ -24,7 +42,11 @@
 # Fields deliberately not shown, so a later reader does not think they were
 # missed: thinking.enabled (constant true on Opus 5, where effort and thinking
 # are coupled), exceeds_200k_tokens (derivable from the token count already on
-# the line), version, session_name, session_id, prompt_id, workspace.repo.
+# the line), version, session_name, prompt_id, workspace.repo, and the
+# prompt_cache counters requests, expected_rebuilds, cache_write_tokens and
+# miss_recache_tokens, which describe the session's history rather than
+# anything to act on. prompt_cache.ttl is used but not shown: it scales the
+# countdown colour. session_id names the miss journal and is never displayed.
 #
 # Pairs with settings.json:
 #   "statusLine": { "type": "command", "command": "…/statusline.sh",
@@ -59,6 +81,7 @@ C_COST=$'\033[38;5;218m'
 C_MODES=$'\033[38;5;103m'     # the whole modes cluster, one colour
 C_FAST=$'\033[38;5;220m'      # effort glyph while fast mode is on
 C_COLD=$'\033[38;5;159m'      # ❄ pale ice
+C_MISS=$'\033[38;5;226m'      # a cache miss in its first five minutes
 C_WARM=$'\033[38;5;253m'      # 50-75 band, and pending review
 C_LOW=$'\033[38;5;78m'
 C_MID=$'\033[38;5;228m'
@@ -78,7 +101,8 @@ while IFS=$'\t' read -r k v; do
 done < <(jq -r '
   def s: if . == null then "" else tostring end;
   def i: if . == null then "" else (floor | tostring) end;
-  [ ["model_name",  (.model.display_name // "")]
+  [ ["session_id",  (.session_id // "")]
+  , ["model_name",  (.model.display_name // "")]
   , ["model_id",    (.model.id // "")]
   , ["effort",      (.effort.level // "")]
   , ["fast",        (if .fast_mode then "1" else "" end)]
@@ -123,6 +147,9 @@ done < <(jq -r '
   , ["pc_misses",   (.prompt_cache.misses | i)]
   , ["pc_observed", (if (.prompt_cache == null) or (.prompt_cache.caching_observed)
                      then "1" else "" end)]
+  , ["pc_ttl",      (.prompt_cache.ttl // "")]
+  , ["pc_miss_at",  (.prompt_cache.last_miss_at | i)]
+  , ["pc_causes",   ((.prompt_cache.last_miss_cause.causes // []) | join(","))]
   ] | .[] | @tsv' 2>/dev/null)
 
 # ---------------------------------------------------------------- helpers ---
@@ -172,6 +199,40 @@ fmt_duration() {
     h=$(( (sec + 1800) / 3600 ))
     (( h <= 99 )) && { printf '%dh' "$h"; return; }
     printf '%dd' $(( (sec + 43200) / 86400 ))
+}
+
+# The cache countdown: two or three characters, always. Minutes are rounded up
+# so the last minute reads 1m rather than 0m while the cache is still warm,
+# then hours from 100 minutes, since "100m" would be the first four-character
+# value. No current TTL reaches an hour, so this is future-proofing.
+fmt_cache_left() {
+    local s=${1:-0}
+    if (( s >= 6000 )); then printf '%dh' $(( (s + 1800) / 3600 ))
+    else local m=$(( (s + 59) / 60 )); (( m < 1 )) && m=1; printf '%dm' "$m"; fi
+}
+
+# Claude Code's miss causes, as one word each. A single miss can carry several
+# (/model usually reports model and effort together), joined with +. The rare
+# ones share "other" rather than each earning a word nobody would recognise,
+# and duplicates within one miss collapse. Absent or empty is undiagnosed.
+cause_words() {
+    local out="" c w IFS=,
+    for c in $1; do
+        case $c in
+            tools_changed)                  w=tools ;;
+            system_prompt_changed)          w=prompt ;;
+            model_changed)                  w=model ;;
+            effort_changed)                 w=effort ;;
+            fast_mode_changed)              w=fast ;;
+            messages_rewritten)             w=rewind ;;
+            likely_server_side)             w=server ;;
+            ttl_expired_5m|ttl_expired_1h)  w=idle ;;
+            unknown|'')                     w='?' ;;
+            *)                              w=other ;;
+        esac
+        case "+$out+" in *"+$w+"*) ;; *) out+="${out:+"+"}$w" ;; esac
+    done
+    printf '%s' "${out:-?}"
 }
 
 # Not ${x^}: that expansion is bash 4 only, and macOS ships bash 3.2 as
@@ -447,6 +508,46 @@ else
 fi
 CTX_TXT="$(fmt_tokens "$CTX_USED")/$(fmt_tokens "$CTX_SIZE") [${BAR}$(context_colour "$PCT")${PCT_TEXT}${R}]"
 
+# ------------------------------------------------------------ miss journal ---
+# The payload carries the cause of the LAST miss only. To show the last five
+# minutes of them, the script keeps one line per miss in a file named by the
+# session id, in the runtime directory so it dies with the login (Linux) or is
+# per-user and swept by the OS (macOS). It is read only when a miss has ever
+# happened in the session, and written only when a new one appears, so a
+# healthy session never touches it. Without a session id, the arrays simply
+# hold the one miss the payload knows about.
+J_AT=(); J_COUNT=(); J_CAUSES=(); JFILE=""; JOURNAL_DIRTY=""
+case $P_session_id in
+    ''|*[!A-Za-z0-9._-]*) ;;  # no id, or one shaped like nothing we would name a file after
+    *) JDIR="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/claude-statusline-${UID:-$(id -u)}"
+       JFILE="$JDIR/$P_session_id" ;;
+esac
+if [ -n "$JFILE" ] && [ -r "$JFILE" ]; then
+    while IFS=$'\t' read -r at cnt c; do
+        case $at in ''|*[!0-9]*) continue ;; esac
+        J_AT+=("$at"); J_COUNT+=("${cnt:-0}"); J_CAUSES+=("$c")
+    done < "$JFILE"
+fi
+JN=${#J_AT[@]}
+if (( ${P_pc_miss_at:-0} > 0 && (JN == 0 || P_pc_miss_at > J_AT[JN-1]) )); then
+    # Two misses between renders leave only the later cause visible; record
+    # the earlier one as undiagnosed so the sequence stays the right length.
+    if (( JN > 0 && P_pc_misses - J_COUNT[JN-1] > 1 )); then
+        J_AT+=("$P_pc_miss_at"); J_COUNT+=($(( P_pc_misses - 1 ))); J_CAUSES+=("unknown")
+    fi
+    J_AT+=("$P_pc_miss_at"); J_COUNT+=("${P_pc_misses:-0}"); J_CAUSES+=("$P_pc_causes")
+    JOURNAL_DIRTY=1; JN=${#J_AT[@]}
+fi
+if [ -n "$JOURNAL_DIRTY" ] && [ -n "$JFILE" ]; then
+    [ -d "$JDIR" ] || mkdir -p -m 700 "$JDIR" 2>/dev/null
+    # Prune to the display window, but keep the newest line whatever its age:
+    # it is what the next render compares against to notice a new miss.
+    for ((i = 0; i < JN; i++)); do
+        (( NOW - J_AT[i] <= 300 || i == JN - 1 )) &&
+            printf '%s\t%s\t%s\n' "${J_AT[i]}" "${J_COUNT[i]}" "${J_CAUSES[i]}"
+    done > "$JFILE" 2>/dev/null
+fi
+
 # ------------------------------------------------------------ prompt cache ---
 # hit_ratio counts cache reads against ALL input tokens, uncached included, so
 # it reads lower than v3's per-request ratio and is the honest number.
@@ -457,24 +558,46 @@ if [ -n "$P_pc_observed" ]; then
     else
         CACHE_TXT="⚡${C_GRAY}N/A${R}"
     fi
-    if [ -n "$P_pc_warm" ] && [ -n "$P_pc_expires" ]; then
-        LEFT=$(( P_pc_expires - NOW ))
-        # 15 minutes: long enough to decide whether to send now or accept the
-        # rebuild, short enough that it is silent nearly all the time.
-        if (( LEFT > 0 && LEFT <= 900 )); then
-            CACHE_TXT+="${C_MID}⏱$(( (LEFT + 59) / 60 ))m${R}"
-        fi
-    fi
-    # Only a cache that exists can be cold. Before the first API response
-    # prompt_cache is absent entirely, which is unknown, not cold.
-    if [ -n "$P_pc" ] && [ -z "$P_pc_warm" ]; then
+    # Countdown while warm, cold marker otherwise. The colour bands are the
+    # rate-limit ones applied to the share of the TTL already spent, so the
+    # line has one colour language and a 5-minute TTL is not alarmed all its
+    # life. Only a cache that exists can be cold: before the first API
+    # response prompt_cache is absent entirely, which is unknown, not cold.
+    LEFT=0
+    [ -n "$P_pc_warm" ] && [ -n "$P_pc_expires" ] && LEFT=$(( P_pc_expires - NOW ))
+    if (( LEFT > 0 )); then
+        case $P_pc_ttl in 5m) TTL=300 ;; *) TTL=3600 ;; esac
+        SPENT=$(( (TTL - LEFT) * 100 / TTL )); (( SPENT < 0 )) && SPENT=0
+        CACHE_TXT+="$(limit_colour "$SPENT")⏱$(fmt_cache_left "$LEFT")${R}"
+    elif [ -n "$P_pc" ]; then
         if [ -n "$P_pc_recache" ]; then
             CACHE_TXT+="${C_COLD}❄$(fmt_tokens "$P_pc_recache")${R}"
         else
             CACHE_TXT+="${C_COLD}❄${R}"
         fi
     fi
-    (( ${P_pc_misses:-0} > 0 )) && CACHE_TXT+="${C_CRIT}✗${P_pc_misses}${R}"
+    # A miss is a receipt, not an alarm: the rebuild it reports is already
+    # paid for. The count is permanent and matches /cost; the causes of the
+    # last five minutes follow it, in order, and the whole thing is yellow for
+    # exactly as long as a cause is still on the line. Adjacent repeats
+    # collapse to one word with a multiplier.
+    if (( ${P_pc_misses:-0} > 0 )); then
+        SEQ=""; PREV=""; REP=0
+        flush_word() {
+            [ -z "$PREV" ] && return
+            SEQ+="${SEQ:+,}${PREV}"
+            (( REP > 1 )) && SEQ+="×${REP}"
+        }
+        for ((i = 0; i < JN; i++)); do
+            (( NOW - J_AT[i] > 300 )) && continue
+            W=$(cause_words "${J_CAUSES[i]}")
+            if [ "$W" = "$PREV" ]; then REP=$((REP + 1))
+            else flush_word; PREV=$W; REP=1; fi
+        done
+        flush_word
+        if [ -n "$SEQ" ]; then CACHE_TXT+="${C_MISS}✗${P_pc_misses}·${SEQ}${R}"
+        else                   CACHE_TXT+="${C_GRAY}✗${P_pc_misses}${R}"; fi
+    fi
     CACHE_TXT=" ${CACHE_TXT}"
 fi
 

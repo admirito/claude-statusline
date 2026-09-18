@@ -8,8 +8,12 @@ examined and then deliberately left off.
 * Principles
 
 1. *Quiet by default, escalate when it matters.* A number you cannot act on is
-   noise. Windows past the first appear only above 75%, cache alarms only when
-   the cache is about to cost something, mode flags only when a mode is on.
+   noise. Windows past the first appear only above 75%, the cold-cache marker
+   only when the cache is cold, mode flags only when a mode is on. The one
+   deliberate exception is the cache countdown, which is on the whole time the
+   cache is warm: the question it answers, "can I leave my desk", is asked
+   while everything is healthy, and "will it still be warm when I am back"
+   needs the number at 45 minutes as much as at 5.
 2. *One fact in one place.* The context window size sits beside the token count
    it scales, not also in the model badge. Lines changed sits beside the branch,
    because both describe the working tree.
@@ -71,17 +75,49 @@ uncached input included. That is a lower and more honest number than a
 per-request ratio of reads to writes, which flatters itself by leaving uncached
 input out of the denominator and reads =N/A= until the first cache write.
 
-Three conditional alarms:
+*The countdown* =⏱53m= is shown the whole time the cache is warm. Two or three
+characters always: minutes rounded up to 99, then hours, so the last minute
+reads =1m= rather than =0m= and no future TTL widens the cell. Its colour is the
+share of the TTL already spent, using the rate-limit bands so the line has one
+colour language: gray under half, white to three quarters, then yellow, orange
+and red at 75, 85 and 95 percent. On a one-hour TTL those are 30, 15, 9 and 3
+minutes left. Scaling by the TTL rather than by minutes left matters because
+the TTL is not always an hour: subscribers on allowlisted models get =1h=, API
+keys and most Bedrock and Vertex sessions get =5m=, and a fixed fifteen-minute
+alarm would have been lit for the whole life of a five-minute cache.
 
-- =⏱= when the cached prefix expires within 15 minutes. Long enough to decide
-  whether to send now or accept the rebuild, short enough to stay silent nearly
-  always.
-- =❄= when the cache has gone cold, with the number of tokens the next request
-  re-caches. This is the one figure on the line denominated in money.
-- =✗= when the session has recorded cache misses that a compaction does not
-  explain, which means something is invalidating the prefix.
+=❄= replaces the countdown when the cache is cold, with the number of tokens the
+next request re-caches. This is the one figure on the line denominated in
+money. An absent =prompt_cache= object is *unknown*, not cold, and must not
+render =❄=.
 
-An absent =prompt_cache= object is *unknown*, not cold, and must not render =❄=.
+*Misses* =✗4·tools,rewind= are a receipt, not an alarm: by the time one shows,
+the rebuild it reports has already been paid for. So nothing about it is red.
+The count is permanent for the session and is the same figure =/cost= shows,
+which includes rebuilds caused by idling past the TTL; those are counted here
+too, as =idle=, rather than filtered out, so the two numbers never disagree.
+
+Claude Code diagnoses each miss by comparing the request with the previous one
+and names the cause: tool definitions changed, system prompt changed, model,
+effort or fast mode switched, earlier messages rewritten, idle past the TTL,
+nothing changed (so the server dropped it), or undiagnosed. Each becomes one
+plain word rather than a glyph, because nine glyphs is a legend nobody keeps in
+their head and a word needs none. A single miss can carry several causes
+(=/model= usually reports model and effort together); they join with =+=. The
+rare causes share =other=.
+
+Each cause word lives for five minutes and then drops off; a diagnosis is only
+interesting while you can still remember what you were doing. There is one
+colour and one rule: count and words are yellow for exactly as long as a word is
+on the line, and the bare count is gray. Two colours for two ages was
+considered and rejected as a distinction nobody would read. The payload carries
+the cause of the *last* miss only, so to show the last five minutes of them the
+script keeps a journal: one line per miss
+in a file named after the session id, in the runtime directory. It is read only
+when a miss has ever happened in the session and written only when a new one
+appears, so a healthy session never touches it. Adjacent repeats collapse to
+=tools×2=, which is what an MCP server reconnecting in a loop looks like.
+
 Statistics cover the main conversation only; subagent requests are excluded.
 
 ** Effort and fast mode
@@ -132,6 +168,8 @@ later still renders sensibly.
 | =session_name=          | Unbounded width in a line kept narrow                          |
 | =session_id=, =prompt_id= | Nothing a human acts on                                      |
 | =workspace.repo=        | Restates what the branch and the terminal title already say    |
+| =prompt_cache.requests=, =expected_rebuilds=, =cache_write_tokens=, =miss_recache_tokens= | Session history, nothing to act on; =hit_ratio= already summarises it |
+| =prompt_cache.ttl=      | Used, not shown: it scales the countdown colour                |
 
 =session_id= was also considered as a cache key for the two git calls, and
 rejected: git state changes without a new session, so a cached branch or dirty
@@ -142,6 +180,13 @@ flag would render a confidently wrong line, and the calls are milliseconds.
 One =jq= pass for the payload and one for the account and settings files, plus
 two =git= calls. The payload pass emits key/value pairs rather than a fixed
 sequence, so adding a field later cannot silently shift every value after it.
+
+The miss journal is the only file the script writes. It is read only once a
+miss has happened in the session and rewritten only when a new one appears,
+pruned to the five-minute display window plus the newest line, which the next
+render compares against. The session id is accepted as a file name only if it
+is made of letters, digits, dots, underscores and dashes; anything else keeps
+the journal in memory for that render.
 
 * Bugs worth remembering
 
@@ -184,6 +229,14 @@ Found while building this, all of them the kind that pass a happy-path test:
   and costs nothing.
 - Several glyphs are East Asian /Ambiguous/ width: one column in a Latin-locale
   terminal, two in a CJK-configured one.
+- Two misses between two renders leave only the later cause visible; the
+  earlier one is journaled as =?= so the sequence keeps its length. Renders
+  follow every assistant message, so this needs two misses in one turn.
+- A session resumed within five minutes of a miss shows that miss's word from
+  the journal beside a count that restarted with the new process.
+- Journal files are one per session and a few hundred bytes; they die with the
+  login on Linux (=XDG_RUNTIME_DIR=) and are swept by the OS on macOS, but are
+  not cleaned up by the script itself.
 
 * The assumption most likely to drift
 

@@ -5,14 +5,16 @@ A status line for [[https://claude.com/claude-code][Claude Code]] that fits a lo
 quiet until something needs your attention.
 
 #+begin_example
-[alice|Opus 5⡇|Max] main +156/-23 | ⌚15h Ⓐ61m | $4.82 ⧗24%→3h | 312K/1M [####--------32%] ⚡91% ↗12K
+[alice|Opus 5⡇|Max] main +156/-23 | ⌚15h Ⓐ61m | $4.82 ⧗24%→3h | 312K/1M [####--------32%] ⚡91%⏱53m ↗12K
 #+end_example
 
 Everything that can be silent is silent. Rate limit windows past the first
-appear only once they constrain you, cache alarms appear only when the cache is
-about to cost you something, and the session-mode flags are absent entirely
-unless a mode is on. A healthy session is the line above; a session in trouble
-says so without you going looking.
+appear only once they constrain you, a cache miss names its cause for five
+minutes and then keeps only the count, and the session-mode flags are absent
+entirely unless a mode is on. A healthy session is the line above; a session in
+trouble says so without you going looking. The one thing that is always on is
+the cache countdown, because "can I leave my desk" is asked while everything is
+healthy.
 
 * Provenance
 
@@ -41,6 +43,7 @@ reading.
 | =⧗24%→3h=          | 5-hour rate limit window used, and when it resets                    |
 | =312K/1M […32%]=   | context used against the window, and against the compaction threshold |
 | =⚡91%=             | prompt cache hit ratio for this session                              |
+| =⏱53m=             | how long the prompt cache stays warm; colour is the share of its TTL already spent |
 | =↗12K=             | output tokens produced                                               |
 
 ** Appears only when it matters
@@ -48,9 +51,8 @@ reading.
 | Flag              | Meaning                                                     |
 |-------------------+-------------------------------------------------------------|
 | =W82%→3d=         | weekly rate limit window, shown past 75%                     |
-| =⏱7m=             | prompt cache goes cold in under 15 minutes                   |
 | =❄312K=           | cache is cold; that many tokens get re-cached on the next request |
-| =✗2=              | cache misses this session that a compaction does not explain |
+| =✗2·tools=        | cache misses this session (the same count =/cost= shows), and for five minutes the cause of each recent one: =tools= =prompt= =model= =effort= =fast= =rewind= =server= =idle= =other= =?= |
 | =#1234✓=          | pull request and review state (=✓= approved =⋯= pending =✗= changes requested =◌= draft); GitLab merge requests render as =!1234= |
 | =⎇name= / =⑂branch= | a Claude worktree session, or any other linked git worktree |
 | =≡ ※ ✎ »=         | output style: Concise, Explanatory, Learning, Proactive      |
@@ -66,8 +68,9 @@ reading.
   that dialect deliberately.
 - =jq=
 - =git=, optional. Without it the branch segment reads =no-git=.
-- Claude Code 2.1.251 or newer for the cache and spend-limit fields. Older
-  versions render everything else and simply omit those.
+- Claude Code 2.1.251 or newer for the cache and spend-limit fields, 2.1.260
+  or newer for miss causes. Older versions render everything else and simply
+  omit those.
 
 * Install
 
@@ -93,7 +96,7 @@ events and schedules a wake-up when a rate limit window resets or the cache
 expires, so most of the line is live without it. The countdowns are not: they
 matter while you are idle, which is exactly when no event fires.
 
-* What it reads
+* What it reads, and the one thing it writes
 
 Beyond the JSON payload on stdin, the script reads up to six files, all
 read-only:
@@ -106,11 +109,18 @@ read-only:
 | =/etc/claude-code/managed-settings.json= | the same, if an administrator set one     |
 
 It touches your credentials file because that is the only place the plan tier is
-recorded, and it takes exactly one string from it. Nothing is written, nothing
-leaves the machine, and no network call is made. If you would rather it did not,
-delete =~/.claude/.credentials.json= from the =CFG= list near the top of the
-account block; the plan badge then falls back to billing type, which cannot tell
-Pro from Max.
+recorded, and it takes exactly one string from it. Nothing leaves the machine
+and no network call is made. If you would rather it did not, delete
+=~/.claude/.credentials.json= from the =CFG= list near the top of the account
+block; the plan badge then falls back to billing type, which cannot tell Pro
+from Max.
+
+The script writes one file: a journal of recent cache misses, one line per
+miss, named after the session id under =$XDG_RUNTIME_DIR= (or =$TMPDIR=, or
+=/tmp=) in a =claude-statusline-<uid>= directory of its own. Claude Code reports
+only the latest miss's cause, and this is how the line can show the last five
+minutes of them. It is written only when a new miss appears, so a session
+without misses never creates it.
 
 * Configuration
 
