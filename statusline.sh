@@ -625,6 +625,18 @@ fi
 [ "$S_at5" = "$P_rl5_at" ] || S_band5=0
 [ "$S_at7" = "$P_rl7_at" ] || S_band7=0
 
+# The band each window stands in now, and the highest it has stood in during
+# this window. Both are needed, and they are not the same number: these are
+# ROLLING windows, so used_percentage falls as old usage ages out. Storing the
+# current band and firing on "higher than last time" re-announces the same
+# crossing every time the figure dips below a boundary and climbs back over
+# it, which for a busy five-hour window is often. The high-water mark fires
+# each band once per window, which is what "upward only" has to mean.
+CUR5=$(band "$(round "${P_rl5:-0}")")
+CUR7=$(band "$(round "${P_rl7:-0}")")
+HI5=$CUR5; (( S_band5 > HI5 )) && HI5=$S_band5
+HI7=$CUR7; (( S_band7 > HI7 )) && HI7=$S_band7
+
 # Activity is the last moment the session did anything: a new prompt, or more
 # output tokens. Not the render clock, which ticks while idle, and not the
 # prompt alone, which would call a twenty-minute turn twenty minutes away.
@@ -780,9 +792,9 @@ if [ -z "$B_TEXT" ] || (( NOW >= B_EXPIRES )); then
     #    carries the pace, since a weekly percentage without it is not yet a
     #    question.
     if [ -n "$S_seen" ]; then
-        if (( $(band "$(round "${P_rl7:-0}")") > S_band7 )); then
+        if (( CUR7 > S_band7 )); then
             BRIEFS+=("${C_GRAY}W${R} $(brief_limit "weekly limit" "$P_rl7" "$P_rl7_at")${C_GRAY} · ${R}$(brief_pace)")
-        elif (( $(band "$(round "${P_rl5:-0}")") > S_band5 )); then
+        elif (( CUR5 > S_band5 )); then
             BRIEFS+=("${C_GRAY}⧗${R} $(brief_limit "session limit" "$P_rl5" "$P_rl5_at")\
 ${C_GRAY} · ${R}$(brief_limit "weekly" "$P_rl7" "$P_rl7_at")")
         fi
@@ -837,8 +849,7 @@ if [ -n "$STATE_DIRTY" ] && [ -n "$SFILE" ]; then
         done
         printf 's\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
             "$P_prompt_id" "$ACTIVITY" "$P_out_tok" \
-            "$(band "$(round "${P_rl5:-0}")")" "$P_rl5_at" \
-            "$(band "$(round "${P_rl7:-0}")")" "$P_rl7_at" "${P_pc_recached:-0}"
+            "$HI5" "$P_rl5_at" "$HI7" "$P_rl7_at" "${P_pc_recached:-0}"
         if [ -n "$B_TEXT" ] && (( NOW < B_EXPIRES )); then
             printf 'b\t%s\t%s\n' "$B_EXPIRES" "$B_TEXT"
         fi

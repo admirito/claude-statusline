@@ -221,6 +221,13 @@ demonstrably at the keyboard:
    crossed from and the opening brief has just said where both windows stand. A
    weekly crossing carries the pace, since a weekly percentage without it is not
    yet a question.
+
+   What is remembered per window is the *highest* band it has reached, not the
+   band it is in. These are rolling windows: =used_percentage= falls as old
+   usage ages out, so a figure that dips under a boundary and climbs back over
+   it would otherwise announce the same crossing again, and again. A busy
+   five-hour window does that repeatedly. The high-water mark resets when the
+   window does, which the payload signals by changing =resets_at=.
 4. *A cache miss*, with the detail the one-word cause on line 1 cannot carry:
    how many tools were added and removed, how far the system prompt moved, and
    the tokens that miss re-cached.
@@ -338,6 +345,9 @@ Found while building this, all of them the kind that pass a happy-path test:
   follow every assistant message, so this needs two misses in one turn.
 - A session resumed within five minutes of a miss shows that miss's word from
   the journal beside a count that restarted with the new process.
+- A band is announced once per window even if usage crosses it, falls back and
+  crosses it again, which is the intended reading of "upward only" but does
+  mean a genuine second climb goes unremarked.
 - The pace assumes the weekly window is exactly seven days long, which is what
   its name and every observed reset say, but the payload states only when it
   ends, not when it began.
