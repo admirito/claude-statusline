@@ -138,7 +138,9 @@ under =$XDG_RUNTIME_DIR= (or =$TMPDIR=, or =/tmp=) in a
 (Claude Code reports only the latest one's cause, and this is how the line can
 show the last five minutes of them), what the previous render saw, and any
 second-line brief still inside its minute. It is read once and written once per
-render, and only when something in it changed.
+render, and only when something in it changed. If the directory cannot be
+written the script carries on without it, and the second line simply never
+appears.
 
 * Configuration
 

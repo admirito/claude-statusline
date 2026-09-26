@@ -8,6 +8,8 @@
 #     rate you have kept since the week began. Nothing in Claude Code shows
 #     this, and the raw weekly percentage cannot answer the only question
 #     worth asking of a weekly budget: am I going to run out?
+#   * the miss journal grows into a session state file, which also carries
+#     what the previous render saw and any brief still inside its minute.
 #   * a second line, but only ever for a minute at a time. It carries the
 #     facts that are otherwise invisible until they bite (the weekly window
 #     below 75%, reset instants as clock times, why a cache miss happened) and
@@ -128,7 +130,10 @@ while IFS=$'\t' read -r k v; do
     [ -n "$k" ] && printf -v "P_$k" '%s' "$v"
 done < <(jq -r '
   def s: if . == null then "" else tostring end;
-  def i: if . == null then "" else (floor | tostring) end;
+  # Not `floor` on whatever arrives: jq builds this array in one go, so one
+  # string where a number was expected fails the whole program and the line
+  # renders as if stdin had been empty. A wrong type is an absent field.
+  def i: if type == "number" then (floor | tostring) else "" end;
   [ ["session_id",  (.session_id // "")]
   , ["prompt_id",   (.prompt_id // "")]
   , ["model_name",  (.model.display_name // "")]
@@ -598,44 +603,66 @@ CTX_TXT="$(fmt_tokens "$CTX_USED")/$(fmt_tokens "$CTX_SIZE") [${BAR}$(context_co
 # shift the meaning of an old line, and a file from an earlier version is
 # ignored rather than misread.
 #   m <at> <count> <causes>     one cache miss
-#   s <prompt_id> <activity> <out_tok> <band5> <at5> <band7> <at7> <recached>
+#   s <prompt_id> <activity> <out_tok> <band5> <at5> <band7> <at7> <recached> <opened>
 #   b <expires> <text>          a brief, already rendered
+#
+# Fields are separated by US (0x1f), not by a tab. Tab is IFS *whitespace*, so
+# `IFS=$'\t' read` folds a run of tabs into one delimiter and every field after
+# an empty one shifts left. Three of these are routinely empty: prompt_id
+# before the first turn, and both resets_at before the first API response. That
+# put an activity timestamp in prompt_id and a zero in activity, and the line
+# greeted the first prompt of every session with "back after 20723d". US is not
+# whitespace, so empty fields survive. A file from an earlier version has no US
+# in it at all, so its whole line lands in `kind`, matches nothing, and is
+# ignored, which is what the typed-line format is for.
+US=$'\037'
 J_AT=(); J_COUNT=(); J_CAUSES=(); SFILE=""; STATE_DIRTY=""
 S_prompt=""; S_activity=""; S_out=""; S_band5=0; S_at5=""; S_band7=0; S_at7=""
-S_recached=""; S_seen=""; B_EXPIRES=0; B_TEXT=""
+S_recached=""; S_opened=""; B_EXPIRES=0; B_TEXT=""
 case $P_session_id in
-    ''|*[!A-Za-z0-9._-]*) ;;  # no id, or one shaped like nothing we would name a file after
+    # "." and ".." pass a character test and name a directory, which `read`
+    # then fails on, once per render.
+    ''|.|..|*[!A-Za-z0-9._-]*) ;;
     *) SDIR="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/claude-statusline-${UID:-$(id -u)}"
        SFILE="$SDIR/$P_session_id" ;;
 esac
+# A state file that cannot be kept is worse than no briefs at all: nothing
+# would record that a brief had been shown, so the opening one would print on
+# every render for the life of the session. Establish now whether the file is
+# usable, and if it is not, say so by clearing SFILE, which also suppresses
+# every brief below.
+if [ -n "$SFILE" ]; then
+    [ -d "$SDIR" ] || mkdir -p -m 700 "$SDIR" 2>/dev/null
+    if [ ! -d "$SDIR" ] || [ ! -w "$SDIR" ] || [ -d "$SFILE" ]; then SFILE=""; fi
+fi
 if [ -n "$SFILE" ] && [ -r "$SFILE" ]; then
-    while IFS=$'\t' read -r kind a b c d e f g h; do
+    while IFS=$US read -r kind a b c d e f g h i; do
         case $kind in
             m) case $a in ''|*[!0-9]*) continue ;; esac
-               J_AT+=("$a"); J_COUNT+=("${b:-0}"); J_CAUSES+=("$c") ;;
+               J_AT+=("$a"); case $b in ''|*[!0-9]*) b=0 ;; esac
+               J_COUNT+=("$b"); J_CAUSES+=("$c") ;;
             s) S_prompt=$a; S_activity=$b; S_out=$c; S_band5=${d:-0}; S_at5=$e
-               S_band7=${f:-0}; S_at7=$g; S_recached=$h; S_seen=1 ;;
-            b) B_EXPIRES=${a:-0}; B_TEXT=$b ;;
+               S_band7=${f:-0}; S_at7=$g; S_recached=$h; S_opened=$i ;;
+            # Validated because a torn or hand-edited file would otherwise put
+            # a non-number into arithmetic, which prints to stderr on every
+            # render until the file is next rewritten.
+            b) case $a in ''|*[!0-9]*) a=0 ;; esac
+               B_EXPIRES=$a; B_TEXT=$b ;;
         esac
     done < "$SFILE"
 fi
+case $S_band5 in ''|*[!0-9]*) S_band5=0 ;; esac
+case $S_band7 in ''|*[!0-9]*) S_band7=0 ;; esac
+case $S_activity in ''|*[!0-9]*) S_activity="" ;; esac
 
-# A window that has rolled over since the last render starts its bands again,
-# or every crossing of the old window would fire a second time at the new one.
-[ "$S_at5" = "$P_rl5_at" ] || S_band5=0
-[ "$S_at7" = "$P_rl7_at" ] || S_band7=0
-
-# The band each window stands in now, and the highest it has stood in during
-# this window. Both are needed, and they are not the same number: these are
-# ROLLING windows, so used_percentage falls as old usage ages out. Storing the
-# current band and firing on "higher than last time" re-announces the same
-# crossing every time the figure dips below a boundary and climbs back over
-# it, which for a busy five-hour window is often. The high-water mark fires
-# each band once per window, which is what "upward only" has to mean.
-CUR5=$(band "$(round "${P_rl5:-0}")")
-CUR7=$(band "$(round "${P_rl7:-0}")")
-HI5=$CUR5; (( S_band5 > HI5 )) && HI5=$S_band5
-HI7=$CUR7; (( S_band7 > HI7 )) && HI7=$S_band7
+# The band each window stands in now. A window this render has not seen before,
+# because it has just rolled over or because limits have only now appeared, is
+# SEEDED at its current band rather than reset to zero: zero would read as a
+# crossing of every band below wherever it already stands, and announce "12%"
+# the moment a new five-hour window opens.
+CUR5=$(band "$(round "${P_rl5:-0}")"); CUR7=$(band "$(round "${P_rl7:-0}")")
+[ "$S_at5" = "$P_rl5_at" ] || S_band5=$CUR5
+[ "$S_at7" = "$P_rl7_at" ] || S_band7=$CUR7
 
 # Activity is the last moment the session did anything: a new prompt, or more
 # output tokens. Not the render clock, which ticks while idle, and not the
@@ -645,19 +672,24 @@ if [ "$P_out_tok" != "$S_out" ] || [ "$P_prompt_id" != "$S_prompt" ]; then
     ACTIVITY=$NOW
 fi
 
+# Pulled out of the array before the arithmetic: bash 3.2 evaluates a
+# subscript that `||` should have short-circuited, so J_AT[JN-1] with JN of 0
+# prints "bad array subscript" to stderr on every render of a healthy session.
 JN=${#J_AT[@]}
+LAST_AT=0; LAST_COUNT=0
+if (( JN > 0 )); then LAST_AT=${J_AT[JN-1]}; LAST_COUNT=${J_COUNT[JN-1]}; fi
 NEW_MISS=""
-if (( ${P_pc_miss_at:-0} > 0 && (JN == 0 || P_pc_miss_at > J_AT[JN-1]) )); then
+if (( ${P_pc_miss_at:-0} > 0 && (JN == 0 || P_pc_miss_at > LAST_AT) )); then
     # Two misses between renders leave only the later cause visible; record
     # the earlier one as undiagnosed so the sequence stays the right length.
-    if (( JN > 0 && P_pc_misses - J_COUNT[JN-1] > 1 )); then
+    if (( JN > 0 && P_pc_misses - LAST_COUNT > 1 )); then
         J_AT+=("$P_pc_miss_at"); J_COUNT+=($(( P_pc_misses - 1 ))); J_CAUSES+=("unknown")
     fi
     J_AT+=("$P_pc_miss_at"); J_COUNT+=("${P_pc_misses:-0}"); J_CAUSES+=("$P_pc_causes")
     STATE_DIRTY=1; NEW_MISS=1; JN=${#J_AT[@]}
 fi
 
-# ------------------------------------------------------------ prompt cache ---# ------------------------------------------------------------ prompt cache ---
+# ------------------------------------------------------------ prompt cache ---
 # hit_ratio counts cache reads against ALL input tokens, uncached included, so
 # it reads lower than v3's per-request ratio and is the honest number.
 CACHE_TXT=""
@@ -739,8 +771,11 @@ brief_pace() {
     printf '%s' "$out"
 }
 
-BRIEFS=()
-if [ -z "$B_TEXT" ] || (( NOW >= B_EXPIRES )); then
+# Nothing is composed without a state file to remember it by: an unrecorded
+# brief is shown again on the very next render, and again, for the life of the
+# session.
+BRIEFS=(); SHOWN5=""; SHOWN7=""; XING=""
+if [ -n "$SFILE" ] && { [ -z "$B_TEXT" ] || (( NOW >= B_EXPIRES )); }; then
     # Ordered news first, context second, because only the first two are kept.
     # 1. A cache miss: the detail the one-word cause on line 1 cannot carry.
     if [ -n "$NEW_MISS" ]; then
@@ -759,9 +794,17 @@ if [ -z "$B_TEXT" ] || (( NOW >= B_EXPIRES )); then
         BRIEFS+=("$MB")
     fi
     # 2. A new prompt after a real absence: what changed while you were gone.
+    #    The gap cannot exceed the session's own age. Anything larger means
+    #    the stored instant did not come from this session, and the brief
+    #    would announce something like "back after 20722d", which is NOW
+    #    measured from the epoch. That is how the tab-delimiter bug showed
+    #    itself; the guard stays because the reading is absurd whatever put
+    #    it there, and a status line should not print an absurdity.
+    GAP=$(( NOW - ${S_activity:-NOW} ))
+    if (( ${P_dur_ms:-0} > 0 && GAP > P_dur_ms / 1000 )); then GAP=0; fi
     if [ -n "$P_prompt_id" ] && [ -n "$S_prompt" ] && [ "$P_prompt_id" != "$S_prompt" ] \
-       && (( NOW - ${S_activity:-NOW} >= IDLE_RETURN )); then
-        RB="${C_GRAY}↩ back after $(fmt_duration $(( (NOW - S_activity) * 1000 )))${R}"
+       && (( GAP >= IDLE_RETURN )); then
+        RB="${C_GRAY}↩ back after $(fmt_duration $(( GAP * 1000 )))${R}"
         if [ -n "$P_pc" ] && [ -z "$P_pc_warm" ]; then
             RB+="${C_GRAY} · ${C_COLD}❄${R}${C_GRAY} cache went cold${R}"
             [ -n "$P_pc_recache" ] && RB+="${C_GRAY}, re-caches $(fmt_tokens "$P_pc_recache")${R}"
@@ -772,7 +815,13 @@ if [ -z "$B_TEXT" ] || (( NOW >= B_EXPIRES )); then
         [ -n "$PACE" ] && RB+="${C_GRAY} · ${R}$(brief_pace)"
         BRIEFS+=("$RB")
     # 3. The first render that has rate limits: the session's opening facts.
-    elif [ -z "$S_seen" ] && [ -n "$P_rl5" ]; then
+    #    Keyed on having shown it, not on the state file existing: Claude Code
+    #    renders once at session start, before the first API response, and
+    #    that render has no rate_limits but does write state. Testing the file
+    #    meant the opening brief was already "seen" by the time the limits it
+    #    reports arrived, so it never appeared at all.
+    elif [ -z "$S_opened" ] && [ -n "$P_rl5" ]; then
+        OPENED=1
         SB="${C_GRAY}⧗${R} $(brief_limit "session" "$P_rl5" "$P_rl5_at")"
         # The weekly window is independently absent: a Pro session, or one
         # whose weekly reset has just passed. Its separator has to go with it,
@@ -786,18 +835,20 @@ if [ -z "$B_TEXT" ] || (( NOW >= B_EXPIRES )); then
         [ -n "$P_pc_ttl" ] && SB+="${C_GRAY} · cache TTL ${P_pc_ttl}${R}"
         BRIEFS+=("$SB")
     fi
-    # 4. A window crossing a band, upward only, and never on the first render
-    #    of a session: there is no previous band to have crossed from, and the
-    #    opening brief has just said where both windows stand. The weekly one
-    #    carries the pace, since a weekly percentage without it is not yet a
-    #    question.
-    if [ -n "$S_seen" ]; then
-        if (( CUR7 > S_band7 )); then
-            BRIEFS+=("${C_GRAY}W${R} $(brief_limit "weekly limit" "$P_rl7" "$P_rl7_at")${C_GRAY} · ${R}$(brief_pace)")
-        elif (( CUR5 > S_band5 )); then
-            BRIEFS+=("${C_GRAY}⧗${R} $(brief_limit "session limit" "$P_rl5" "$P_rl5_at")\
-${C_GRAY} · ${R}$(brief_limit "weekly" "$P_rl7" "$P_rl7_at")")
-        fi
+    # 4. A window crossing a band, upward only. A window seen for the first
+    #    time was seeded at its current band above, so it cannot read as a
+    #    crossing here. The weekly one carries the pace, since a weekly
+    #    percentage without it is not yet a question. Each clause drops the
+    #    separator with the clause it introduces, or the brief trails " · ".
+    XING_AT=${#BRIEFS[@]}
+    if (( CUR7 > S_band7 )); then
+        XB="${C_GRAY}W${R} $(brief_limit "weekly limit" "$P_rl7" "$P_rl7_at")"
+        [ -n "$PACE" ] && XB+="${C_GRAY} · ${R}$(brief_pace)"
+        BRIEFS+=("$XB"); XING=7
+    elif (( CUR5 > S_band5 )); then
+        XB="${C_GRAY}⧗${R} $(brief_limit "session limit" "$P_rl5" "$P_rl5_at")"
+        [ -n "$P_rl7" ] && XB+="${C_GRAY} · ${R}$(brief_limit "weekly" "$P_rl7" "$P_rl7_at")"
+        BRIEFS+=("$XB"); XING=5
     fi
     # Two at once is a busy moment, not a report; a third would wrap.
     if (( ${#BRIEFS[@]} > 0 )); then
@@ -805,10 +856,25 @@ ${C_GRAY} · ${R}$(brief_limit "weekly" "$P_rl7" "$P_rl7_at")")
         (( ${#BRIEFS[@]} > 1 )) && B_TEXT+="${C_GRAY}  ·  ${R}${BRIEFS[1]}"
         B_EXPIRES=$(( NOW + BRIEF_TTL ))
         STATE_DIRTY=1
+        # A band counts as announced only if its brief survived that cap. The
+        # stored band is what the next render compares against, so advancing
+        # it for a crossing that was never printed loses it for good.
+        if (( XING_AT < 2 )); then
+            [ "$XING" = 5 ] && SHOWN5=1
+            [ "$XING" = 7 ] && SHOWN7=1
+        fi
     else
         B_TEXT=""
     fi
 fi
+
+# What the next render compares against: the band last ANNOUNCED, not the band
+# the window is in. Advancing it on a render that printed nothing, which is
+# every render while an earlier brief still holds the row, swallows the
+# crossing permanently.
+NEW5=$S_band5; [ -n "$SHOWN5" ] && NEW5=$CUR5
+NEW7=$S_band7; [ -n "$SHOWN7" ] && NEW7=$CUR7
+[ -n "$S_opened" ] || S_opened=${OPENED:-}
 
 # ------------------------------------------------------------------ output ---
 # Grouped by what the numbers describe rather than by field: working tree
@@ -844,14 +910,15 @@ if [ -n "$STATE_DIRTY" ] && [ -n "$SFILE" ]; then
     {
         for ((i = 0; i < JN; i++)); do
             if (( NOW - J_AT[i] <= 300 || i == JN - 1 )); then
-                printf 'm\t%s\t%s\t%s\n' "${J_AT[i]}" "${J_COUNT[i]}" "${J_CAUSES[i]}"
+                printf 'm%s%s%s%s%s%s\n' "$US" "${J_AT[i]}" "$US" "${J_COUNT[i]}" "$US" "${J_CAUSES[i]}"
             fi
         done
-        printf 's\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-            "$P_prompt_id" "$ACTIVITY" "$P_out_tok" \
-            "$HI5" "$P_rl5_at" "$HI7" "$P_rl7_at" "${P_pc_recached:-0}"
+        printf 's%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n' \
+            "$US" "$P_prompt_id" "$US" "$ACTIVITY" "$US" "$P_out_tok" \
+            "$US" "$NEW5" "$US" "$P_rl5_at" "$US" "$NEW7" "$US" "$P_rl7_at" \
+            "$US" "${P_pc_recached:-0}" "$US" "$S_opened"
         if [ -n "$B_TEXT" ] && (( NOW < B_EXPIRES )); then
-            printf 'b\t%s\t%s\n' "$B_EXPIRES" "$B_TEXT"
+            printf 'b%s%s%s%s\n' "$US" "$B_EXPIRES" "$US" "$B_TEXT"
         fi
     } > "$SFILE.$$" 2>/dev/null && mv -f "$SFILE.$$" "$SFILE" 2>/dev/null
     rm -f "$SFILE.$$" 2>/dev/null

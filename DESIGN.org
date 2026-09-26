@@ -146,10 +146,8 @@ colour and one rule: count and words are yellow for exactly as long as a word is
 on the line, and the bare count is gray. Two colours for two ages was
 considered and rejected as a distinction nobody would read. The payload carries
 the cause of the *last* miss only, so to show the last five minutes of them the
-script keeps a journal: one line per miss
-in a file named after the session id, in the runtime directory. It is read only
-when a miss has ever happened in the session and written only when a new one
-appears, so a healthy session never touches it. Adjacent repeats collapse to
+script records each one in the session state file, described under Cost.
+Adjacent repeats collapse to
 =tools×2=, which is what an MCP server reconnecting in a loop looks like.
 
 Statistics cover the main conversation only; subagent requests are excluded.
@@ -209,7 +207,11 @@ demonstrably at the keyboard:
 
 1. *The first render that has rate limits.* Where both windows stand, when they
    reset, the pace, and the cache TTL. The facts you would otherwise run =/usage=
-   for.
+   for. Whether this has been shown is recorded explicitly, rather than
+   inferred from the state file existing: Claude Code renders once at session
+   start, /before/ the first API response, and that render has no rate limits
+   but does write state. Inferring it meant the brief counted as already shown
+   by the time the limits it reports arrived, so it never appeared at all.
 2. *A new prompt after ten minutes away.* How long you were gone, whether the
    cache survived it and what the next request re-caches if not, and where the
    windows stand now. This is the one exception to "transient only": it is still
@@ -222,12 +224,20 @@ demonstrably at the keyboard:
    weekly crossing carries the pace, since a weekly percentage without it is not
    yet a question.
 
-   What is remembered per window is the *highest* band it has reached, not the
-   band it is in. These are rolling windows: =used_percentage= falls as old
-   usage ages out, so a figure that dips under a boundary and climbs back over
-   it would otherwise announce the same crossing again, and again. A busy
-   five-hour window does that repeatedly. The high-water mark resets when the
-   window does, which the payload signals by changing =resets_at=.
+   What is remembered per window is the band last *announced*, not the band it
+   is in. Two bugs live in that distinction. These are rolling windows:
+   =used_percentage= falls as old usage ages out, so remembering the current
+   band announces the same crossing again every time the figure dips under a
+   boundary and climbs back over it, which a busy five-hour window does
+   repeatedly. And a crossing that happens while an earlier brief still holds
+   the row is not printed, so advancing the mark on that render would lose it
+   for good; it is announced on the first render after the row frees up.
+
+   A window the state file has not seen before, because it has just rolled
+   over or because rate limits have only now appeared, is /seeded/ at its
+   current band rather than reset to zero. Zero would read as a crossing of
+   every band below wherever the window already stands, and announce "12%" the
+   moment a new five-hour window opens.
 4. *A cache miss*, with the detail the one-word cause on line 1 cannot carry:
    how many tools were added and removed, how far the system prompt moved, and
    the tokens that miss re-cached.
@@ -270,17 +280,29 @@ One =jq= pass for the payload and one for the account and settings files, plus
 two =git= calls. The payload pass emits key/value pairs rather than a fixed
 sequence, so adding a field later cannot silently shift every value after it.
 
-One state file per session is the only thing the script writes: the miss
-journal, what the previous render saw (its prompt id, activity instant, output
-tokens, the band each window had crossed) and any brief still inside its
-minute. It is read once at the top and written once at the end, and only when
-something in it changed. Its lines are typed by their first field, so a format
-that grows later cannot shift the meaning of an old line and a file from an
-earlier version is ignored rather than misread.
+One state file per session is the only thing the script writes: the recent
+cache misses, what the previous render saw (its prompt id, activity instant,
+output tokens, the band last announced for each window, whether the opening
+brief has been shown) and any brief still inside its minute. It is read once
+at the top and written once at the end, and only when something in it changed.
+Its lines are typed by their first field, so a format that grows later cannot
+shift the meaning of an old line and a file from an earlier version is ignored
+rather than misread.
+
+Fields are separated by US (0x1f), not by a tab, because tab is IFS
+/whitespace/: =IFS=$'\t' read= folds a run of tabs into a single delimiter, so
+every field after an empty one shifts left. Three fields are routinely empty.
+US is not whitespace and cannot occur in any of the values.
 
 The session id is accepted as a file name only if it is made of letters,
-digits, dots, underscores and dashes; anything else keeps the state in memory
-for that render, which costs only the brief sequence.
+digits, dots, underscores and dashes, and is neither =.= nor =..=, both of
+which pass that test and name a directory.
+
+A state file that cannot be kept, because the directory is unwritable or the
+id was rejected, suppresses the second line altogether rather than falling
+back to rendering briefs from memory. Nothing would record that a brief had
+been shown, so the opening one would print on every render for the life of the
+session: a permanent second row is a worse failure than a missing one.
 
 "Activity" is the last moment the session did anything: a new prompt, or more
 output tokens. Not the render clock, which ticks while idle, and not the prompt
@@ -323,11 +345,26 @@ Found while building this, all of them the kind that pass a happy-path test:
    streaming. v5 had the same shape but wrote the file only on a cache miss,
    which is why it went unnoticed. Every such line is an =if= now, and the
    script ends with an explicit =exit 0=.
-10. *A truncating redirect is not atomic.* Claude Code kills a status line
+10. *Tab is IFS whitespace.* =IFS=$'\t' read -r a b c= folds a run of tabs
+    into one delimiter, so a record with an empty field is read back with
+    every later field shifted left. It is invisible until a field is empty,
+    which for the state file meant the first render of every session: an
+    activity timestamp landed in =prompt_id=, a zero landed in =activity=, and
+    the line greeted the first prompt with "back after 20723d". Separate
+    fields with a character that is not whitespace.
+11. *bash 3.2 evaluates a subscript that =||= should have short-circuited.*
+    =(( n == 0 || x > arr[n-1] ))= returns the right answer and also prints
+    "bad array subscript" to stderr, once per render, on every macOS session
+    whose array happens to be empty. Read the element into a scalar first.
+12. *jq builds its output in one pass.* One payload field of an unexpected
+    type, reaching =floor=, fails the whole program, and every field goes with
+    it: the line renders as though stdin had been empty. Test =type== rather
+    than trusting the schema.
+13. *A truncating redirect is not atomic.* Claude Code kills a status line
     still running when the next update arrives. =… > "$f"= killed halfway
     leaves a half-written file for the next render to read; write to
     =$f.$$= and =mv= it into place instead.
-11. *=${x^}= and =${x,,}= are bash 4.* They fail at runtime, not at parse time, so
+14. *=${x^}= and =${x,,}= are bash 4.* They fail at runtime, not at parse time, so
    an untested branch carrying one looks fine until the day it runs. macOS ships
    bash 3.2.
 
@@ -354,6 +391,9 @@ Found while building this, all of them the kind that pass a happy-path test:
 - A brief composed in one terminal is not shown in another attached to the same
   session; the state file is per session, and only one renderer reads it at a
   time in practice.
+- A band is announced at most once per window, so a crossing that arrives while
+  an earlier brief holds the row waits for the row rather than stacking, and a
+  second climb through the same band after a dip is silent.
 - State files are one per session and under a kilobyte; they die with the login
   on Linux (=XDG_RUNTIME_DIR=) and are swept by the OS on macOS, but are not
   cleaned up by the script itself.
