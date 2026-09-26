@@ -307,7 +307,20 @@ Found while building this, all of them the kind that pass a happy-path test:
    loudly. Floor integer fields in jq.
 8. *=jq -s= indexes by position*, so a missing file shifts every later file up
    and silently disables whatever depended on the last one. Select by shape.
-9. *=${x^}= and =${x,,}= are bash 4.* They fail at runtime, not at parse time, so
+9. *A status line must exit 0.* Claude Code discards the output of a command
+   that fails, so a non-zero exit blanks the whole bar until the next render.
+   The trap is =[ -n "$x" ] && cmd=, whose status is false whenever =$x= is
+   empty: harmless in the middle of a script, fatal as the last command. v6
+   ended the state file with an optional brief line written exactly that way,
+   and briefs are absent on most renders, so the bar blanked constantly while
+   streaming. v5 had the same shape but wrote the file only on a cache miss,
+   which is why it went unnoticed. Every such line is an =if= now, and the
+   script ends with an explicit =exit 0=.
+10. *A truncating redirect is not atomic.* Claude Code kills a status line
+    still running when the next update arrives. =… > "$f"= killed halfway
+    leaves a half-written file for the next render to read; write to
+    =$f.$$= and =mv= it into place instead.
+11. *=${x^}= and =${x,,}= are bash 4.* They fail at runtime, not at parse time, so
    an untested branch carrying one looks fine until the day it runs. macOS ships
    bash 3.2.
 

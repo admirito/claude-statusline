@@ -810,7 +810,9 @@ printf '[%s%s%s%s|%s]%s %s%s %s | %s %s | %s%s%s | %s%s ↗%s\n' \
 
 # %s, never the text itself: a brief is full of percent signs, and printf would
 # read them as conversions and eat the line.
-[ -n "$B_TEXT" ] && (( NOW < B_EXPIRES )) && printf '%s\n' "$B_TEXT"
+if [ -n "$B_TEXT" ] && (( NOW < B_EXPIRES )); then
+    printf '%s\n' "$B_TEXT"
+fi
 
 # ------------------------------------------------------------- state, once ---
 # One write, and only when a miss, a crossing or a brief changed something. The
@@ -822,16 +824,32 @@ if [ -n "$SFILE" ]; then
 fi
 if [ -n "$STATE_DIRTY" ] && [ -n "$SFILE" ]; then
     [ -d "$SDIR" ] || mkdir -p -m 700 "$SDIR" 2>/dev/null
+    # Written to a temporary file and renamed, never in place. Claude Code
+    # kills a status line still running when the next update arrives, and a
+    # truncating redirect killed halfway leaves a half-written state for the
+    # next render to read. rename(2) is atomic, so a reader sees the old file
+    # or the new one and never a torn one.
     {
         for ((i = 0; i < JN; i++)); do
-            (( NOW - J_AT[i] <= 300 || i == JN - 1 )) &&
+            if (( NOW - J_AT[i] <= 300 || i == JN - 1 )); then
                 printf 'm\t%s\t%s\t%s\n' "${J_AT[i]}" "${J_COUNT[i]}" "${J_CAUSES[i]}"
+            fi
         done
         printf 's\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
             "$P_prompt_id" "$ACTIVITY" "$P_out_tok" \
             "$(band "$(round "${P_rl5:-0}")")" "$P_rl5_at" \
             "$(band "$(round "${P_rl7:-0}")")" "$P_rl7_at" "${P_pc_recached:-0}"
-        [ -n "$B_TEXT" ] && (( NOW < B_EXPIRES )) &&
+        if [ -n "$B_TEXT" ] && (( NOW < B_EXPIRES )); then
             printf 'b\t%s\t%s\n' "$B_EXPIRES" "$B_TEXT"
-    } > "$SFILE" 2>/dev/null
+        fi
+    } > "$SFILE.$$" 2>/dev/null && mv -f "$SFILE.$$" "$SFILE" 2>/dev/null
+    rm -f "$SFILE.$$" 2>/dev/null
 fi
+
+# A status line must exit 0. Claude Code discards the output of a command that
+# fails, so the whole bar blanks until the next render. Every `[ -n "$x" ] &&
+# cmd` above is a false status waiting to become the script's own when it lands
+# last, which is exactly what v6 did: the state file's optional brief line was
+# the final command, and it is absent on most renders. The lines are `if`
+# statements now, and this is the belt to that pair of braces.
+exit 0
