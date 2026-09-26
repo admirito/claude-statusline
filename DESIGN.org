@@ -41,6 +41,37 @@ you can spend freely. The countdown gains minute resolution past 50%, where
 Other windows appear only past 75% and stay coarse. Three days versus three days
 and four hours changes nothing you would do.
 
+** Pace
+
+=»68%= is the weekly percentage the session would reach *by the reset* if it
+carried on at the average rate kept since the week began. The payload gives the
+instant the weekly window resets, and the window is a week long, so the week's
+start is known and the figure needs no history: it is the used percentage
+divided by the fraction of the week already gone.
+
+Nothing in Claude Code shows this, and it is the only form in which a weekly
+budget answers the question worth asking of it. 31% used is not interpretable:
+on a Tuesday it is comfortable, on a Saturday it is not. =»54%= says the same
+data as "you finish the week at 54%", and =»108%= says "you run out before the
+reset".
+
+It is always shown, unlike the other limit cells, because the answer matters
+most while it is still good news. Colour is the only thing that escalates: gray
+while the projection lands under 100 less the buffer, sharp yellow once it does
+not, red past =PACE_RED=. The buffer is 1 by default, so the cell stays quiet
+until the projection genuinely overruns; raising it warns earlier.
+
+Two absences. The cell goes with the weekly window itself, which is missing for
+API-key, Bedrock and Vertex sessions and before the first API response. And it
+stays absent through the first day of the week, where the divisor is small
+enough to make the answer meaningless rather than alarming: 5% used two hours in
+projects to 400%.
+
+The figure is an average over the whole week so far, which makes it stable: a
+quiet weekend pulls it down slowly and a heavy Monday pushes it up slowly. That
+is right for a weekly budget and wrong for a burst, which is what the 5-hour
+window is for.
+
 Colour bands: below 50 gray, 50–75 white, then yellow, orange and red at 75, 85
 and 95. Percentages arrive as floats and are rounded.
 
@@ -69,6 +100,9 @@ Both token figures use one formatter that picks its unit from the magnitude, so
 =1000000= renders =1M= rather than =1000K= and a future window size stays correct.
 
 ** Prompt cache
+
+The cache cell is =⚡= hit ratio, then either the countdown or the cold marker,
+then misses.
 
 =hit_ratio= counts cache reads against *all* input tokens for the session,
 uncached input included. That is a lower and more honest number than a
@@ -158,6 +192,51 @@ colour so five columns do not become five hues. Built-in output styles get a
 dedicated glyph; a custom style falls back to its initial, so a style invented
 later still renders sensibly.
 
+* The second line
+
+A second row, for one minute at a time, and absent the rest of the day. It
+carries what is otherwise invisible until it bites: the weekly window below the
+75% at which line 1 starts showing it, the reset instants as clock times rather
+than durations, and the detail behind a cache miss. Everything on it is either
+absent from line 1 or too long to live there.
+
+The row is not printed at all when no brief is live. An always-present row costs
+a line of terminal for the whole session in order to carry a blank most of the
+day, and a status line that wants two rows should earn the second one each time.
+
+Four moments, chosen because each is one where something changed *and* you are
+demonstrably at the keyboard:
+
+1. *The first render that has rate limits.* Where both windows stand, when they
+   reset, the pace, and the cache TTL. The facts you would otherwise run =/usage=
+   for.
+2. *A new prompt after ten minutes away.* How long you were gone, whether the
+   cache survived it and what the next request re-caches if not, and where the
+   windows stand now. This is the one exception to "transient only": it is still
+   transient, but it is timed to the moment you come back rather than to the
+   moment something happened, because a notice that fires while you are away has
+   already failed.
+3. *A window crossing a band*, upward only: every 10 up to 50, then every 5.
+   Never on a session's first render, where there is no previous band to have
+   crossed from and the opening brief has just said where both windows stand. A
+   weekly crossing carries the pace, since a weekly percentage without it is not
+   yet a question.
+4. *A cache miss*, with the detail the one-word cause on line 1 cannot carry:
+   how many tools were added and removed, how far the system prompt moved, and
+   the tokens that miss re-cached.
+
+Two briefs at once join with a dot; a third is dropped, because two at once is a
+busy moment and three is a report. They are ordered news first, so a miss keeps
+its slot against a crossing.
+
+A brief is composed on the render that earns it and then kept verbatim in the
+state file until it expires. "back after 47m" must not re-count itself every
+thirty seconds, and the alternative, regenerating from a token, would have to
+re-derive facts that have since moved on.
+
+Claude Code updating underneath the session was considered and dropped: it
+announces that itself, and a second notice is noise.
+
 * Fields deliberately not shown
 
 | Field                  | Why not                                                       |
@@ -171,6 +250,9 @@ later still renders sensibly.
 | =prompt_cache.requests=, =expected_rebuilds=, =cache_write_tokens=, =miss_recache_tokens= | Session history, nothing to act on; =hit_ratio= already summarises it |
 | =prompt_cache.ttl=      | Used, not shown: it scales the countdown colour                |
 
+=prompt_id= is not displayed either; it is how a render tells a new user turn
+from a re-render of the same one, which is what dates the "back after" brief.
+
 =session_id= was also considered as a cache key for the two git calls, and
 rejected: git state changes without a new session, so a cached branch or dirty
 flag would render a confidently wrong line, and the calls are milliseconds.
@@ -181,12 +263,21 @@ One =jq= pass for the payload and one for the account and settings files, plus
 two =git= calls. The payload pass emits key/value pairs rather than a fixed
 sequence, so adding a field later cannot silently shift every value after it.
 
-The miss journal is the only file the script writes. It is read only once a
-miss has happened in the session and rewritten only when a new one appears,
-pruned to the five-minute display window plus the newest line, which the next
-render compares against. The session id is accepted as a file name only if it
-is made of letters, digits, dots, underscores and dashes; anything else keeps
-the journal in memory for that render.
+One state file per session is the only thing the script writes: the miss
+journal, what the previous render saw (its prompt id, activity instant, output
+tokens, the band each window had crossed) and any brief still inside its
+minute. It is read once at the top and written once at the end, and only when
+something in it changed. Its lines are typed by their first field, so a format
+that grows later cannot shift the meaning of an old line and a file from an
+earlier version is ignored rather than misread.
+
+The session id is accepted as a file name only if it is made of letters,
+digits, dots, underscores and dashes; anything else keeps the state in memory
+for that render, which costs only the brief sequence.
+
+"Activity" is the last moment the session did anything: a new prompt, or more
+output tokens. Not the render clock, which ticks while idle, and not the prompt
+alone, which would call a twenty-minute turn twenty minutes away from the desk.
 
 * Bugs worth remembering
 
@@ -234,9 +325,18 @@ Found while building this, all of them the kind that pass a happy-path test:
   follow every assistant message, so this needs two misses in one turn.
 - A session resumed within five minutes of a miss shows that miss's word from
   the journal beside a count that restarted with the new process.
-- Journal files are one per session and a few hundred bytes; they die with the
-  login on Linux (=XDG_RUNTIME_DIR=) and are swept by the OS on macOS, but are
-  not cleaned up by the script itself.
+- The pace assumes the weekly window is exactly seven days long, which is what
+  its name and every observed reset say, but the payload states only when it
+  ends, not when it began.
+- A brief composed in one terminal is not shown in another attached to the same
+  session; the state file is per session, and only one renderer reads it at a
+  time in practice.
+- State files are one per session and under a kilobyte; they die with the login
+  on Linux (=XDG_RUNTIME_DIR=) and are swept by the OS on macOS, but are not
+  cleaned up by the script itself.
+- A live brief is stored with its colour escapes in it, so the file is not
+  pleasant to =cat=. Storing it plain would mean re-rendering it against a
+  palette that may have changed, for no gain.
 
 * The assumption most likely to drift
 

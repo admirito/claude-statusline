@@ -5,7 +5,7 @@ A status line for [[https://claude.com/claude-code][Claude Code]] that fits a lo
 quiet until something needs your attention.
 
 #+begin_example
-[alice|Opus 5⡇|Max] main +156/-23 | ⌚15h Ⓐ61m | $4.82 ⧗24%→3h | 312K/1M [####--------32%] ⚡91%⏱53m ↗12K
+[alice|Opus 5⡇|Max] main +156/-23 | ⌚15h Ⓐ61m | $4.82 »54% ⧗24%→3h | 312K/1M [####--------32%] ⚡91%⏱53m ↗12K
 #+end_example
 
 Everything that can be silent is silent. Rate limit windows past the first
@@ -40,6 +40,7 @@ reading.
 | =main +156/-23=    | branch and lines changed, both working-tree state                    |
 | =⌚15h Ⓐ61m=       | session elapsed, and how much of it was spent waiting on the API     |
 | =$4.82=            | session cost                                                         |
+| =»54%=             | pace: the weekly percentage you reach by the reset at your rate so far |
 | =⧗24%→3h=          | 5-hour rate limit window used, and when it resets                    |
 | =312K/1M […32%]=   | context used against the window, and against the compaction threshold |
 | =⚡91%=             | prompt cache hit ratio for this session                              |
@@ -61,6 +62,22 @@ reading.
 | =⧉=               | the session is attached to a remote                          |
 | =③=               | extra working directories                                    |
 | orange branch     | the working directory has left the project directory         |
+
+** The second line
+
+A second row appears for one minute at a time, and is absent the rest of the
+day. It says the things that are otherwise invisible until they bite:
+
+#+begin_example
+⧗ session 12% → 17:05 · weekly 31% → Thu 09:00, pace »54% · cache TTL 1h
+↩ back after 47m · ❄ cache went cold, re-caches 192K · session 12% → 17:05 · pace »54%
+W weekly limit 60% → Thu 09:00 · pace »108%: runs dry Wed 21:00
+✗ cache miss: tools +2/-1 · re-cached 190K
+#+end_example
+
+They fire on the session's first render, on a new prompt after ten minutes
+away, when a window crosses a band (every 10 up to 50, then every 5), and on a
+cache miss. Nothing else, and never for longer than a minute.
 
 * Requirements
 
@@ -115,12 +132,13 @@ and no network call is made. If you would rather it did not, delete
 block; the plan badge then falls back to billing type, which cannot tell Pro
 from Max.
 
-The script writes one file: a journal of recent cache misses, one line per
-miss, named after the session id under =$XDG_RUNTIME_DIR= (or =$TMPDIR=, or
-=/tmp=) in a =claude-statusline-<uid>= directory of its own. Claude Code reports
-only the latest miss's cause, and this is how the line can show the last five
-minutes of them. It is written only when a new miss appears, so a session
-without misses never creates it.
+The script writes one file: a small state file named after the session id,
+under =$XDG_RUNTIME_DIR= (or =$TMPDIR=, or =/tmp=) in a
+=claude-statusline-<uid>= directory of its own. It holds recent cache misses
+(Claude Code reports only the latest one's cause, and this is how the line can
+show the last five minutes of them), what the previous render saw, and any
+second-line brief still inside its minute. It is read once and written once per
+render, and only when something in it changed.
 
 * Configuration
 
