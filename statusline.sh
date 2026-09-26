@@ -137,7 +137,6 @@ done < <(jq -r '
   [ ["session_id",  (.session_id // "")]
   , ["prompt_id",   (.prompt_id // "")]
   , ["model_name",  (.model.display_name // "")]
-  , ["model_id",    (.model.id // "")]
   , ["effort",      (.effort.level // "")]
   , ["fast",        (if .fast_mode then "1" else "" end)]
   , ["style",       (.output_style.name // "")]
@@ -245,7 +244,9 @@ fmt_duration() {
 # value. No current TTL reaches an hour, so this is future-proofing.
 fmt_cache_left() {
     local s=${1:-0}
-    if (( s >= 6000 )); then printf '%dh' $(( (s + 1800) / 3600 ))
+    # 5940, not 6000: a second past 99 minutes already rounds up to "100m",
+    # which is the four characters this is here to avoid.
+    if (( s > 5940 )); then printf '%dh' $(( (s + 1800) / 3600 ))
     else local m=$(( (s + 59) / 60 )); (( m < 1 )) && m=1; printf '%dm' "$m"; fi
 }
 
@@ -512,6 +513,10 @@ else                              COST_TXT="${C_COST}\$${COST_FMT}${R}"; fi
 # Absent until the session's first API response, and always absent on API-key,
 # Bedrock and Vertex auth, so absence is not zero and must render nothing.
 # Only 5h is unconditional: the others are noise until they constrain.
+# Rounded once here and reused by the pace cell and the band arithmetic, which
+# both used to round them again.
+R5=$(round "${P_rl5:-0}"); R7=$(round "${P_rl7:-0}")
+
 LIMIT_PARTS=()
 add_limit() {  # $1 letter (empty for 5h)  $2 pct  $3 resets_at  $4 grain
     local p u
@@ -524,7 +529,7 @@ add_limit() {  # $1 letter (empty for 5h)  $2 pct  $3 resets_at  $4 grain
 # Minutes as well as hours past 50%, where "coffee or lunch" becomes a real
 # question. The others stay coarse: they only appear above 75%, and three days
 # versus three days and four hours changes nothing you would do.
-if (( $(round "${P_rl5:-0}") >= 50 )); then G=fine; else G=coarse; fi
+if (( R5 >= 50 )); then G=fine; else G=coarse; fi
 add_limit ""  "$P_rl5" "$P_rl5_at" "$G"
 add_limit "W" "$P_rl7" "$P_rl7_at" coarse
 # Read if it ever appears. This window is not part of the status line payload
@@ -548,11 +553,13 @@ PACE=""; PACE_TXT=""
 if [ -n "$P_rl7" ] && (( ${P_rl7_at:-0} > 0 )); then
     ELAPSED=$(( NOW - (P_rl7_at - WEEK) ))
     if (( ELAPSED >= PACE_MIN_ELAPSED && ELAPSED <= WEEK )); then
-        PACE=$(( $(round "$P_rl7") * WEEK / ELAPSED ))
+        PACE=$(( (R7 * WEEK + ELAPSED / 2) / ELAPSED ))
         # Capped for width only. Past this the cell says "far too fast", and
         # the exact figure changes nothing you would do about it.
         (( PACE > 999 )) && PACE=999
         if   (( PACE >= PACE_RED )); then PC_COL=$C_CRIT
+        # Buffer is headroom, so 1 means "warn once under one point of it is
+        # left", i.e. from 99 up. Raising it warns earlier.
         elif (( PACE >= 100 - PACE_BUFFER )); then PC_COL=$C_ALERT
         else PC_COL=$C_GRAY; fi
         PACE_TXT=" ${PC_COL}»${PACE}%${R}"
@@ -660,7 +667,7 @@ case $S_activity in ''|*[!0-9]*) S_activity="" ;; esac
 # SEEDED at its current band rather than reset to zero: zero would read as a
 # crossing of every band below wherever it already stands, and announce "12%"
 # the moment a new five-hour window opens.
-CUR5=$(band "$(round "${P_rl5:-0}")"); CUR7=$(band "$(round "${P_rl7:-0}")")
+CUR5=$(band "$R5"); CUR7=$(band "$R7")
 [ "$S_at5" = "$P_rl5_at" ] || S_band5=$CUR5
 [ "$S_at7" = "$P_rl7_at" ] || S_band7=$CUR7
 
@@ -765,7 +772,7 @@ brief_pace() {
     out="${C_GRAY}pace ${PC_COL}»${PACE}%${R}"
     # Over 100 the number alone is abstract; the instant it runs dry is not.
     if (( PACE > 100 )); then
-        exhaust=$(( (P_rl7_at - WEEK) + 60480000 / PACE ))
+        exhaust=$(( (P_rl7_at - WEEK) + (WEEK * 100) / PACE ))
         (( exhaust > NOW )) && out+="${C_GRAY}: runs dry $(fmt_clock "$exhaust")${R}"
     fi
     printf '%s' "$out"
