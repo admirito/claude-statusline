@@ -254,6 +254,178 @@ re-derive facts that have since moved on.
 Claude Code updating underneath the session was considered and dropped: it
 announces that itself, and a second notice is noise.
 
+* Agent rows
+
+Claude Code lists background agents in a panel under the prompt and can hand
+each row to a command, the =subagentStatusLine=, which it runs every few
+seconds with all the agents at once. This script is that command as well: a
+payload with a =tasks= array is answered with one row per agent, and the main
+line never runs. It is one script rather than two because a row is meant to
+read as a small copy of the main line, and sharing the palette, the glyphs and
+the number formats makes that true by construction rather than by care.
+
+** What the payload does not say
+
+The payload knows an agent's model, status, token count, context window, start
+time, description and, when Claude gave it one, its name. Everything else on a
+row comes from two files Claude Code keeps beside the session transcript for
+each agent: a small metadata file (type, parent, nesting depth) and the agent's
+own transcript (tool calls, token usage, cache writes, the background commands
+it started). Neither is a published interface, both are read defensively, and
+every cell they feed is absent when they are.
+
+A transcript can be long and grows while it is read, so it is read
+incrementally: only the bytes added since the previous run, and only whole
+lines, since Claude Code may be mid-write at the end. The new bytes are copied
+out first, so their size, their partial tail and what gets parsed are one
+snapshot. A response split across several entries repeats its usage, so each
+request is counted once. What the transcript has said so far is kept per agent
+in a state file beside the main line's, which also holds what no single run can
+know: when the current status began, when the tokens last grew, and their
+recent history.
+
+** Layout
+
+Every cell has a fixed width, so the rows read as a table and nothing jumps
+between ticks. The exceptions are the identity bracket, padded to the widest
+bracket in the panel, which moves only when an agent arrives or leaves, and
+the context column, which widens by a few columns while a fork's longer cell
+is on screen. Nested
+rows get a tree connector from Claude Code, two columns per level, drawn in
+front of the row's text; the bracket's padding gives those columns back, so
+every column after it still lines up with the rows above.
+
+Whatever varies in width goes after the =│=, in the label area, where a count
+appearing or growing moves nothing else: the marks, then the task, then the
+newest tool call.
+
+** Identity
+
+The bracket is the main line's badge, model then effort glyph, and each part is
+gray where it is the same as the main session's and in the main line's own
+colour where it differs, so what stands out is exactly what is different. An
+agent that sets no effort inherits the session's, so its glyph is always gray.
+The main session's model and effort come from the main line's state file, which
+records them for this; without it, nothing is claimed to match.
+
+The agent type follows, except =general-purpose=, the default, which is absent
+as the main line's defaults are. A custom type is shown in the colour its
+definition gives it. Claude Code keys colours by type, never by name, and the
+metadata file does not record them, so the colour is read from the definition
+itself: the project's =.claude/agents/= before the user's, matched on the
+frontmatter =name=, since file names need not match. A name, when Claude gave
+the agent one, is a different thing and goes elsewhere: =@name=, in the label
+area, because a name is what =SendMessage= addresses.
+
+A fork is marked =⋔fork=, in a pink nothing else on either line uses, because
+whether an agent started fresh or with a copy of the whole conversation changes
+everything about its context. =⑂= would have been the obvious glyph, but the
+main line already uses it for a linked git worktree.
+
+** Activity and state
+
+The activity slot is ten columns, always. While tokens flow it is a sparkline,
+one bar per thirty seconds of growth, scaled to the largest step, with bars not
+seen yet drawn flat so that the cell never grows. Claude Code runs the command
+every five seconds, and a bar per run made the line crawl without pause; a bar
+per thirty seconds moves it at most twice a minute, and ten of them cover five
+minutes, the agent's rhythm rather than its last few breaths. A new agent's
+line starts flat and fills in bar by bar. The script keeps that history itself
+rather than taking the payload's own samples, which restart from a single
+sample whenever Claude Code redraws the panel.
+
+When tokens stop, the slot says why instead, and for how long:
+
+- *Quiet*, =▁▁▁▁▁▁▁ 2m=: running, but no new token for thirty seconds or more.
+  Something inside one step is taking long: a command, a slow response, or an
+  unanswered permission prompt. The time turns yellow past a minute and orange
+  past five, so a stuck agent stands out.
+- *Waiting*, =⧖ wait 10m=: the status is =completed= but the row is still in
+  the panel. The panel hides agents that are done, so a completed row on screen
+  is one kept alive by background work of its own, a command it started or
+  agents of its own, and it wakes when that work finishes.
+- =✗ failed= in red, =⚠ stopped= in orange, =◌ queued= and =⏸ paused= in gray.
+
+Both times count from the first run that saw the state: a lower bound, never an
+overstatement.
+
+The newest tool call follows the task in every state, =· Bash go test=, so it
+neither flickers in and out between calls nor vanishes when the agent stops. A
+quiet agent's tool is what it is stuck in; a waiting agent's is usually what it
+is waiting for.
+
+** Cost, context and cache
+
+Cost is estimated the way Claude Code estimates the session's: the transcript's
+tokens at list price, or at the rates in a =modelPricing= table, which Claude
+Code honours only from managed settings, so the script reads it only from
+there. It is an estimate at API rates, like the main line's, not what a
+subscription is charged.
+
+The context cell uses the main line's formula, a share of the room before
+auto-compaction, so the same percentage means the same thing on both lines. A
+fork shows what it inherited and what it has added, =⋔366+5K=, the inherited
+part taken from its first request. A fork's context can later fall below what
+it inherited, when old tool results are cleared from it on waking; it then
+shows its total alone.
+
+The cache cell speaks the main line's language too, with two changes. A
+healthy hit ratio, 75% or more, is the least interesting number on the row, so
+it is left out and the cell is the countdown alone, =⚡5m=. And a cold cache
+moves its =❄= to the context cell, =❄143K·14%=, because what waking the agent
+rebuilds is that context; the cache cell keeps the ratio it had, =⚡❄44%=.
+Agents get a five-minute cache unless configured otherwise, so a waiting
+agent's cache usually goes cold long before it wakes.
+
+** The marks
+
+After the =│=, each only when it applies: output past 10K, =↗48K=;
+compactions, =⟲2=; the agents nested below, =+3=; its own background commands
+still running, =&2=; its worktree and pull request; its name; failed tool
+calls, =✗2=.
+
+=+N= counts every agent below, at any depth, because the panel lists nested
+agents only once their parent is opened, and a problem three levels down is
+otherwise invisible. It carries the worst state below it: =✗= one failed or
+was stopped, =▁= one has been quiet for five minutes, =❄= one waits with a cold
+cache. Claude Code's own row has a descendant count, but a replaced row loses
+it, so it is rebuilt from the parent links in the metadata.
+
+=&= is the shell's background operator, and =$= would have read as money next
+to the cost.
+
+** Worktrees
+
+An agent can run in a git worktree of its own. Claude Code creates it under
+=.claude/worktrees/= on a generated branch, and by default starts it from the
+remote's default branch rather than from yours, so an agent sent to fix
+something while you are on a feature branch works on code without your branch
+in it. The mark says what matters without repeating the main line:
+
+- =⎇+12/-3=: what it changed there, untracked files counted as added lines,
+  as a new file counts in a diff. Only the first 4 MB of untracked files is
+  read, since this runs every few seconds and a build can leave anything
+  lying around.
+- =↑2=: its own commits, which a diff would not show.
+- A name only when it says something: the agent's own branch if it moved to
+  one, =⎇fix/parser=; otherwise, in orange, where it started, and only when
+  your HEAD is not in it, =⎇main=. A worktree started from wherever HEAD was
+  is named by a branch holding that commit, yours first, =⎇main~1=.
+
+Its pull request, once the branch exists on =origin=, is the main line's PR
+cell, =#142⋯=. Looking it up is a network call, the only one the script makes,
+so it never runs in the foreground: a detached =gh= refreshes it at most once
+a minute per branch, the row shows what the last lookup found, and a lookup
+that fails keeps it rather than blanking it.
+
+** Cost of a run
+
+One =jq= pass over the payload and one over the settings, then per agent: a
+=jq= pass over the transcript's new bytes when there are any, one over the
+metadata file the first time the agent is seen, and for an agent in a worktree
+a handful of =git= calls. A worktree's starting point and a type's colour never
+change, and are looked up once.
+
 * Fields deliberately not shown
 
 | Field                  | Why not                                                       |
@@ -276,11 +448,12 @@ flag would render a confidently wrong line, and the calls are milliseconds.
 
 * Cost
 
-One =jq= pass for the payload and one for the account and settings files, plus
-two =git= calls. The payload pass emits key/value pairs rather than a fixed
+For the main line, one =jq= pass for the payload and one for the account and
+settings files, plus two =git= calls; the agent rows' own cost is under Agent
+rows. The payload pass emits key/value pairs rather than a fixed
 sequence, so adding a field later cannot silently shift every value after it.
 
-One state file per session is the only thing the script writes: the recent
+One state file per session is the only thing the main line writes: the recent
 cache misses, what the previous render saw (its prompt id, activity instant,
 output tokens, the band last announced for each window, whether the opening
 brief has been shown) and any brief still inside its minute. It is read once
@@ -293,6 +466,12 @@ Fields are separated by US (0x1f), not by a tab, because tab is IFS
 /whitespace/: =IFS=$'\t' read= folds a run of tabs into a single delimiter, so
 every field after an empty one shifts left. Three fields are routinely empty.
 US is not whitespace and cannot occur in any of the values.
+
+The directory must be the user's own, not merely writable: in a shared
+=/tmp=, =mkdir -p= accepts a directory someone else created first, and the
+files in it would then be read as this session's state. The agent rows check
+every field they read back as well, since a number from the file reaches bash
+arithmetic.
 
 The session id is accepted as a file name only if it is made of letters,
 digits, dots, underscores and dashes, and is neither =.= nor =..=, both of
@@ -367,6 +546,33 @@ Found while building this, all of them the kind that pass a happy-path test:
 14. *=${x^}= and =${x,,}= are bash 4.* They fail at runtime, not at parse time, so
    an untested branch carrying one looks fine until the day it runs. macOS ships
    bash 3.2.
+15. *A comma binds tighter than you think in jq.* =A | f, B= is =A | (f, B)=,
+    so =B= runs on the output of =A= rather than on the input. The agent
+    payload's header and its rows were first written that way, and every row
+    read =.tasks= from an array, failed, and the panel stayed as it was.
+16. *=\u= is not a regex escape in jq.* A character class written
+    ="[\\u0000-\\u001f]"= is a class of the letter =u= and some digits, and
+    replacing it blanked most letters out of every label. Map control
+    characters by code point with =explode= and =implode= instead.
+17. *=git ls-files= prints paths relative to where git ran.* Piped into =xargs
+    cat= from anywhere else, every file is missing, silently, and a worktree's
+    new files counted as nothing.
+18. *A status can have two meanings.* An agent reported =completed= is either
+    done or waiting on background work of its own, and the payload does not
+    say which. The panel hides the first kind, and that is what makes the
+    second readable.
+19. *Bash arithmetic evaluates a variable's contents.* =(( x > n ))= with =n=
+    holding =a[$(cmd)]= runs =cmd=. The agent state's history field reached
+    arithmetic unchecked, so a planted state file could run a command; every
+    field read back is validated now, not only the ones that looked numeric.
+20. *One bad entry can freeze an incremental reader.* The transcript pass
+    failed as a whole on one entry of an unexpected shape, the offset rightly
+    stayed put, and so every later run failed on the same entry and the
+    agent's counters stopped for good. Each entry is folded in inside =try=
+    now, and a bad one is skipped.
+21. *=label= is a jq keyword.* On jq 1.6, =… as $label= is a syntax error
+    (later versions accept it), and with stderr discarded the rows simply did
+    not appear.
 
 * Known limitations
 
@@ -400,8 +606,30 @@ Found while building this, all of them the kind that pass a happy-path test:
 - A live brief is stored with its colour escapes in it, so the file is not
   pleasant to =cat=. Storing it plain would mean re-rendering it against a
   palette that may have changed, for no gain.
+- Agent rows: the quiet and wait times count from the first run that saw the
+  state, so they start late when the panel was not being drawn.
+- Agent rows: a cold fork's rebuild can be much smaller than its context, since
+  its prefix is the parent conversation, whose cache may still be warm. It is
+  marked cold all the same.
+- Agent rows: a plugin agent's type keeps the default colour; its definition
+  lives inside the plugin.
+- Agent rows: the cost leaves out the data-residency and fast-mode surcharges,
+  which the transcript does not record.
+- Agent rows: untracked binary files in an agent's worktree count their
+  newlines as lines, and only the first 4 MB of untracked files is counted.
+- Agent rows: the cells are padded by character count, which is column count
+  only in a UTF-8 locale; with =LANG= unset they misalign. The task and tool
+  text are fitted by display width, counting CJK and emoji as two columns,
+  but symbols of ambiguous width as one.
 
 * The assumption most likely to drift
+
+The agent rows are built mostly from files Claude Code keeps for its own use:
+each agent's metadata file and transcript, where they are, and the shape of
+what is in them. None of it is documented. The script reads them defensively,
+and a cell whose source disappears is absent rather than wrong, but a release
+that moves or reshapes them will quietly empty much of a row.
+
 
 The context reserve assumes compaction fires a fixed number of tokens below the
 window. That figure is not part of any published contract and was worked out by

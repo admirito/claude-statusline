@@ -16,6 +16,9 @@ trouble says so without you going looking. The one thing that is always on is
 the cache countdown, because "can I leave my desk" is asked while everything is
 healthy.
 
+The same script also draws the agent panel under the prompt, one row per
+background agent, in the same language. See [[*Agent rows][Agent rows]].
+
 * Provenance
 
 Almost none of this shell script is mine. It was written by Claude, in Claude
@@ -79,6 +82,55 @@ They fire on the session's first render, on a new prompt after ten minutes
 away, when a window crosses a band (every 10 up to 50, then every 5), and on a
 cache miss. Nothing else, and never for longer than a minute.
 
+* Agent rows
+
+Claude Code lists background agents in a panel under the prompt, and can hand
+the drawing of each row to a command. This script is that command too. A row
+says what the default one leaves out, in the main line's language, and every
+cell has a fixed width so the panel reads as a table (the =○= and the tree
+lines are Claude Code's own):
+
+#+begin_example
+○ [Haiku 4.5⡇|Explore]  ⌚3m  ▃▅▃▁█▇▇▄▄▄ $0.08  ⚒23      61K·39% ⚡5m      │ +1✗ Find where tokens refresh · Grep refreshToken
+○ [Opus 5.5⣿|reviewer]  ⌚25m ▁▁▁▁▁▁▁ 2m $3.10  ⚒41     712K·74% ⚡3m      │ ↗48K ⟲2 +3▁ @reviewer Review the payments module · Bash go test -race ./pay/...
+○ [Sonnet 5⡆]           ⌚7m  ▁▁▁▁▁▃█▂▇▆ $1.20  ⚒30       88K·9% ⚡5m      │ ⎇+12/-3↑2 #142⋯ @scout Refactor the cache · Edit cache.go
+○ [Opus 5.5⡇|⋔fork]     ⌚2m  ▁▁▁▁█▃▆▃▃▃ $0.95  ⚒4   ⋔366+5K·38% ⚡5m      │ Try the other fix · Edit lock.go
+○ [Haiku 4.5⡇]          ⌚14m ⧖ wait 10m $0.06  ⚒1      ❄22K·14% ⚡❄44%    │ &2 Run the soak tests · Bash ./soak.sh --hours 2
+#+end_example
+
+| Segment                    | Meaning                                                              |
+|----------------------------+----------------------------------------------------------------------|
+| =Haiku 4.5⡇=               | model and effort, drawn as on the main line; each part gray where it is the main session's |
+| =Explore=, =reviewer=      | agent type, in the colour its definition gives it; absent for =general-purpose= |
+| =⋔fork=                    | a fork: it started with a copy of the conversation that spawned it   |
+| =⌚3m=                     | time since the agent started                                         |
+| =▃▅▃▁█▇▇▄▄▄=               | tokens per thirty seconds over the last five minutes; gray is a stretch with none |
+| =▁▁▁▁▁▁▁ 2m=               | quiet: working, but no new token for that long, turning yellow past a minute and orange past five |
+| =⧖ wait 10m=               | its turn is over and it is waiting on background work of its own    |
+| =✗ failed= =⚠ stopped= =◌ queued= =⏸ paused= | the other states                                   |
+| =$0.08=                    | cost, estimated the way Claude Code estimates the session's          |
+| =⚒23=                      | tool calls so far                                                    |
+| =61K·39%=                  | context, and its share of the room before compaction, as on the main line |
+| =⋔366+5K=                  | a fork's context: what it inherited, and what it has added since     |
+| =⚡5m=                     | its own prompt cache, warm for that long; the hit ratio joins it below 75%, as in =⚡70%⏱5m= |
+| =❄22K= … =⚡❄44%=          | the cache has gone cold: waking the agent rebuilds that context; the ratio is what it had |
+
+** Appears only when it matters
+
+| Flag            | Meaning                                                                    |
+|-----------------+----------------------------------------------------------------------------|
+| =↗48K=          | output tokens, past 10K                                                    |
+| =⟲2=            | the agent's context has been compacted that many times                    |
+| =+3=            | agents nested below it, at any depth; the panel lists them only once you open this one. =✗= one of them failed, =▁= one has been quiet for five minutes, =❄= one waits with a cold cache |
+| =&2=            | background commands of its own still running                              |
+| =⎇+12/-3↑2=     | a worktree of its own: lines changed there and commits made               |
+| =⎇fix/parser=   | …and the branch it moved to, when it made one of its own                   |
+| =⎇main=         | …or, in orange, where it started, when that is not your code: agent worktrees start from the default branch, not from yours |
+| =#142⋯=         | the pull request of that worktree's branch, once pushed                    |
+| =@scout=        | the agent's name, which is what =SendMessage= addresses                   |
+| =✗2=            | failed tool calls                                                          |
+| =… · Grep x=    | the task, then the newest tool call                                        |
+
 * Requirements
 
 - =bash= 3.2 or newer. macOS ships 3.2 as =/bin/bash=; the script stays inside
@@ -88,6 +140,9 @@ cache miss. Nothing else, and never for longer than a minute.
 - Claude Code 2.1.251 or newer for the cache and spend-limit fields, 2.1.260
   or newer for miss causes. Older versions render everything else and simply
   omit those.
+- For the agent rows, a Claude Code whose =subagentStatusLine= sends each
+  agent's model and effort: 2.1.214 or newer. =gh=, optional, for the pull
+  request of an agent working in a worktree of its own.
 
 * Install
 
@@ -108,14 +163,25 @@ Then in =~/.claude/settings.json=:
 }
 #+end_src
 
+For the agent rows, add the same script as the =subagentStatusLine=:
+
+#+begin_src json
+{
+  "subagentStatusLine": {
+    "type": "command",
+    "command": "~/.claude/statusline.sh"
+  }
+}
+#+end_src
+
 =refreshInterval= is optional but recommended. Claude Code re-renders on session
 events and schedules a wake-up when a rate limit window resets or the cache
 expires, so most of the line is live without it. The countdowns are not: they
 matter while you are idle, which is exactly when no event fires.
 
-* What it reads, and the one thing it writes
+* What it reads, and what it writes
 
-Beyond the JSON payload on stdin, the script reads up to six files, all
+Beyond the JSON payload on stdin, the main line reads up to six files, all
 read-only:
 
 | File                                  | For                                        |
@@ -123,16 +189,28 @@ read-only:
 | =~/.claude/.credentials.json=          | =subscriptionType=, to label the plan       |
 | =~/.claude.json=                       | email, billing type, legacy auto-compact setting |
 | =~/.claude/settings.json= and project settings | the auto-compact setting            |
-| =/etc/claude-code/managed-settings.json= | the same, if an administrator set one     |
+| managed settings                      | the same, if an administrator set one: =/etc/claude-code/= on Linux, =/Library/Application Support/ClaudeCode/= on macOS, with any =managed-settings.d/= drop-ins |
 
 It touches your credentials file because that is the only place the plan tier is
 recorded, and it takes exactly one string from it. Nothing leaves the machine
-and no network call is made. If you would rather it did not, delete
+and the main line makes no network call. If you would rather it did not, delete
 =~/.claude/.credentials.json= from the =CFG= list near the top of the account
 block; the plan badge then falls back to billing type, which cannot tell Pro
 from Max.
 
-The script writes one file: a small state file named after the session id,
+The agent rows read, also read-only: the files Claude Code keeps for each
+agent beside the session transcript, a small metadata file and the agent's own
+transcript, which is read incrementally, only what was added since the last
+run; the agent definitions in =~/.claude/agents/= and the project's
+=.claude/agents/=, for an agent type's colour; the settings files above,
+without the credentials, for auto-compact and the =modelPricing= table an
+administrator may set; and, for an agent working in a worktree of its own, a
+few =git= commands in that worktree. They make the script's only network call:
+=gh pr view=, for such an agent once its branch is on =origin=, run detached,
+at most once a minute per branch, and only if =gh= is installed. Set
+=AG_PR_EVERY= to 0 to turn it off.
+
+The main line writes one file: a small state file named after the session id,
 under =$XDG_RUNTIME_DIR= (or =$TMPDIR=, or =/tmp=) in a
 =claude-statusline-<uid>= directory of its own. It holds recent cache misses
 (Claude Code reports only the latest one's cause, and this is how the line can
@@ -142,11 +220,19 @@ render, and only when something in it changed. If the directory cannot be
 written the script carries on without it, and the second line simply never
 appears.
 
+The agent rows keep their own file beside it, the same name with =.agents=
+added, holding what each agent's transcript has said so far and when its state
+last changed. It is rewritten on every run and holds only the agents on screen.
+A pull request lookup leaves a one-line =.pr.<branch>= file next to it.
+
 * Configuration
 
-There is no config file. The knobs are constants at the top of the script:
-the colour palette, =BRANCH_MAX= for branch name shortening, and the threshold
-tables in =limit_colour= and =context_colour=.
+There is no config file. The knobs are constants in the script: the colour
+palette, =BRANCH_MAX= for branch name shortening, the threshold tables in
+=limit_colour= and =context_colour=, and for the agent rows the =AG_= constants
+at the top of their section, such as =AG_BAR= for the seconds each sparkline
+bar covers, =AG_QUIET= for when a working agent reads as quiet, and
+=AG_PR_EVERY= for the pull request lookup.
 
 * Design
 
