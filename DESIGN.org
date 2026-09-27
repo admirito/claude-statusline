@@ -78,6 +78,17 @@ and 95. Percentages arrive as floats and are rounded.
 The whole segment disappears when the field is absent, which is every session
 before its first API response, and always on API-key, Bedrock and Vertex auth.
 
+Past 100, a brief on the second line spells the pace out while the week has
+yet to run dry: the instant it will, how long before the reset that is, and
+=15→12%/day=, the daily rate kept so far against the one that would last to
+the reset. The first is what the pace projects over seven days; the second is
+the share left over the days left, rounded down, since a budget must not
+promise more than is there, and the pair is left out when the two are equal.
+The gap and the rate kept take the pace's colour, the rate that lasts is
+green. The one brief that does not already show when the week resets names
+it, =15h before Thu 09:00=; the others say =15h early=. A render with two
+briefs gives the pace once. It turns a warning into a budget.
+
 ** Context window
 
 Two numbers and a bar. The token count is input only: prompt tokens plus both

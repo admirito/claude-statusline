@@ -1730,14 +1730,38 @@ brief_limit() {   # $1 label  $2 pct  $3 resets_at
     p=$(round "$2"); c=$(limit_colour "$p"); t=$(fmt_clock "$3")
     printf '%s%s %s%s%%%s%s' "$C_GRAY" "$1" "$c" "$p" "$R" "${t:+" ${C_GRAY}→ ${t}${R}"}"
 }
-brief_pace() {
-    local out exhaust
+# Over 100 the number alone is abstract. What is not: the instant the week runs
+# dry, how long before the reset that is, and the daily rate kept so far (the
+# pace is that rate over seven days) against the one that would last to the
+# reset, the share left over the days left. The gap and the rate kept take the
+# pace's colour, the rate that lasts is green, and a brief that does not
+# already say when the week resets names it here.
+brief_pace() {   # $1 "reset" when the brief does not show the reset instant
+    local out exhaust gap kept lasts
     [ -z "$PACE" ] && return
     out="${C_GRAY}pace ${PC_COL}»${PACE}%${R}"
-    # Over 100 the number alone is abstract; the instant it runs dry is not.
     if (( PACE > 100 )); then
-        exhaust=$(( (P_rl7_at - WEEK) + (WEEK * 100) / PACE ))
-        (( exhaust > NOW )) && out+="${C_GRAY}: runs dry $(fmt_clock "$exhaust")${R}"
+        # From the used share itself rather than the rounded pace: at 100%
+        # used that is now, so a week already dry is not announced as running
+        # dry in a few minutes, and a pace just over 100 does not move the
+        # instant by most of an hour. R7 is above 14 whenever PACE is over 100.
+        exhaust=$(( (P_rl7_at - WEEK) + ELAPSED * 100 / R7 ))
+        if (( exhaust > NOW )); then
+            gap=$(fmt_until $(( NOW + P_rl7_at - exhaust )))
+            out+="${C_GRAY}: runs dry $(fmt_clock "$exhaust"), ${PC_COL}${gap}${R}"
+            if [ "$1" = reset ]; then out+="${C_GRAY} before $(fmt_clock "$P_rl7_at")${R}"
+            else                      out+="${C_GRAY} early${R}"; fi
+            # Rounded for the rate kept; floored for the one that lasts, which
+            # must not promise a tenth of a percent more than is there.
+            kept=$(( (R7 * 86400 + ELAPSED / 2) / ELAPSED ))
+            lasts=$(( (100 - R7) * 86400 / (P_rl7_at - NOW) ))
+            (( lasts < 0 )) && lasts=0
+            # Equal at whole percents, which happens just over 100, the pair
+            # would read as "no change needed" beside "runs dry": left out.
+            if (( kept > lasts )); then
+                out+="${C_GRAY} · ${PC_COL}${kept}${R}${C_GRAY}→${C_LOW}${lasts}${R}${C_GRAY}%/day${R}"
+            fi
+        fi
     fi
     printf '%s' "$out"
 }
@@ -1745,7 +1769,7 @@ brief_pace() {
 # Nothing is composed without a state file to remember it by: an unrecorded
 # brief is shown again on the very next render, and again, for the life of the
 # session.
-BRIEFS=(); SHOWN5=""; SHOWN7=""; XING=""
+BRIEFS=(); SHOWN5=""; SHOWN7=""; XING=""; PACE_SAID=""
 if [ -n "$SFILE" ] && { [ -z "$B_TEXT" ] || (( NOW >= B_EXPIRES )); }; then
     # Ordered news first, context second, because only the first two are kept.
     # 1. A cache miss: the detail the one-word cause on line 1 cannot carry.
@@ -1782,8 +1806,11 @@ if [ -n "$SFILE" ] && { [ -z "$B_TEXT" ] || (( NOW >= B_EXPIRES )); }; then
         elif (( ${P_pc_expires:-0} > NOW )); then
             RB+="${C_GRAY} · ${R}⚡${C_GRAY} still warm for $(fmt_cache_left $(( P_pc_expires - NOW )))${R}"
         fi
-        RB+="${C_GRAY} · ${R}$(brief_limit "session" "$P_rl5" "$P_rl5_at")"
-        [ -n "$PACE" ] && RB+="${C_GRAY} · ${R}$(brief_pace)"
+        # The five-hour window is absent after a long enough absence, and its
+        # separator has to go with it, or the brief reads " ·  · ".
+        SL=$(brief_limit "session" "$P_rl5" "$P_rl5_at")
+        [ -n "$SL" ] && RB+="${C_GRAY} · ${R}${SL}"
+        if [ -n "$PACE" ]; then RB+="${C_GRAY} · ${R}$(brief_pace reset)"; PACE_SAID=1; fi
         BRIEFS+=("$RB")
     # 3. The first render that has rate limits: the session's opening facts.
     #    Keyed on having shown it, not on the state file existing: Claude Code
@@ -1799,7 +1826,7 @@ if [ -n "$SFILE" ] && { [ -z "$B_TEXT" ] || (( NOW >= B_EXPIRES )); }; then
         # or the brief reads " ·  · ".
         if [ -n "$P_rl7" ]; then
             SB+="${C_GRAY} · ${R}$(brief_limit "weekly" "$P_rl7" "$P_rl7_at")"
-            [ -n "$PACE" ] && SB+="${C_GRAY}, ${R}$(brief_pace)"
+            if [ -n "$PACE" ]; then SB+="${C_GRAY}, ${R}$(brief_pace)"; PACE_SAID=1; fi
         fi
         # Absent on a provider that reports no cache tokens, where "TTL ?"
         # would be the only thing the opening brief had to say about caching.
@@ -1814,7 +1841,9 @@ if [ -n "$SFILE" ] && { [ -z "$B_TEXT" ] || (( NOW >= B_EXPIRES )); }; then
     XING_AT=${#BRIEFS[@]}
     if (( CUR7 > S_band7 )); then
         XB="${C_GRAY}W${R} $(brief_limit "weekly limit" "$P_rl7" "$P_rl7_at")"
-        [ -n "$PACE" ] && XB+="${C_GRAY} · ${R}$(brief_pace)"
+        # Said once per render: a crossing beside a brief that already gave
+        # the pace would repeat its whole clause.
+        [ -n "$PACE" ] && [ -z "$PACE_SAID" ] && XB+="${C_GRAY} · ${R}$(brief_pace)"
         BRIEFS+=("$XB"); XING=7
     elif (( CUR5 > S_band5 )); then
         XB="${C_GRAY}⧗${R} $(brief_limit "session limit" "$P_rl5" "$P_rl5_at")"

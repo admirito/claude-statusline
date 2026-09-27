@@ -74,7 +74,7 @@ day. It says the things that are otherwise invisible until they bite:
 #+begin_example
 ⧗ session 12% → 17:05 · weekly 31% → Thu 09:00, pace »54% · cache TTL 1h
 ↩ back after 47m · ❄ cache went cold, re-caches 192K · session 12% → 17:05 · pace »54%
-W weekly limit 60% → Thu 09:00 · pace »108%: runs dry Wed 21:00
+W weekly limit 60% → Thu 09:00 · pace »108%: runs dry Wed 21:00, 12h early · 15→12%/day
 ✗ cache miss: tools +2/-1 · re-cached 190K
 #+end_example
 
