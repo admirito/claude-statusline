@@ -596,6 +596,23 @@ AG_TRANSCRIPT_JQ='
     elif .query       then .query
     elif .prompt      then .prompt
     else "" end | flat | .[0:160];
+  # Epoch seconds from a UTC ISO 8601 stamp, by arithmetic rather than
+  # fromdateiso8601. Under jq 1.6 on macOS that returns an hour late for any
+  # instant inside daylight saving time, so a 5-minute cache read as 65
+  # minutes warm and was not marked cold until an hour after it had expired.
+  # The jq 1.7.1 that macOS ships as /usr/bin/jq gets it right, but 1.6
+  # lingers on older installs. Days from the civil date follow the
+  # days_from_civil algorithm by Howard Hinnant. A stamp of any other shape
+  # yields nothing.
+  def epoch:
+    capture("^(?<y>[0-9]{4})-(?<m>[0-9]{2})-(?<d>[0-9]{2})T(?<H>[0-9]{2}):(?<M>[0-9]{2}):(?<S>[0-9]{2})")
+    | map_values(tonumber)
+    | (if .m <= 2 then .y - 1 else .y end) as $y
+    | ($y / 400 | floor) as $era
+    | ($y - $era * 400) as $yoe
+    | ((((if .m > 2 then .m - 3 else .m + 9 end) * 153 + 2) / 5 | floor) + .d - 1) as $doy
+    | ($yoe * 365 + ($yoe / 4 | floor) - ($yoe / 100 | floor) + $doy) as $doe
+    | ($era * 146097 + $doe - 719468) * 86400 + .H * 3600 + .M * 60 + .S;
   reduce (inputs | fromjson? | select(type == "object")) as $o (
     {calls: 0, errs: 0, tool: "", arg: "", reads: 0, all: 0, req: $req, ts: 0, ttl: 0,
      first: 0, in: 0, w5: 0, w1: 0, out: 0, lastout: $lastout, comps: 0,
@@ -619,7 +636,7 @@ AG_TRANSCRIPT_JQ='
            | .w1 += ($u.cache_creation.ephemeral_1h_input_tokens // 0)
            | .out += ($u.output_tokens // 0)
            | .lastout = ($u.output_tokens // 0)
-           | .ts = ((($o.timestamp // "") | sub("\\.[0-9]+"; "") | fromdateiso8601? | floor) // .ts)
+           | .ts = ((($o.timestamp // "") | epoch?) // .ts)
            | (if   ($u.cache_creation.ephemeral_1h_input_tokens // 0) > 0 then .ttl = 3600
               elif ($u.cache_creation.ephemeral_5m_input_tokens // 0) > 0 then .ttl = 300
               else . end)
