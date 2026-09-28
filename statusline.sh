@@ -429,7 +429,17 @@ agent_colour() {
 # colours by type, and the metadata file does not record them, so the answer
 # is the first definition, project before user, whose frontmatter names the
 # type. File names need not match the name field, so every file is looked at.
+#
+# Only files that exist reach awk. A glob that matches nothing is passed on as
+# the pattern itself, and awk stops at the first file it cannot open, so a
+# project without agent definitions of its own hid every user-level one, and
+# the miss was then kept in the agent state as "-" and never retried.
 definition_colour() {  # $1 agent type  $2 project directory
+    local f files=()
+    for f in "$2/.claude/agents"/*.md "$HOME/.claude/agents"/*.md; do
+        [ -f "$f" ] && [ -r "$f" ] && files+=("$f")
+    done
+    (( ${#files[@]} > 0 )) || return 0
     awk -v want="$1" '
         FNR == 1 { fm = 0; name = ""; col = "" }
         /^---[[:space:]]*$/ {
@@ -438,7 +448,7 @@ definition_colour() {  # $1 agent type  $2 project directory
         }
         fm == 1 && /^name:/  { sub(/^name:[[:space:]]*/, "");  gsub(/["\047[:space:]]/, ""); name = $0 }
         fm == 1 && /^color:/ { sub(/^color:[[:space:]]*/, ""); gsub(/["\047[:space:]]/, ""); col = $0 }
-    ' "$2/.claude/agents"/*.md "$HOME/.claude/agents"/*.md 2>/dev/null
+    ' "${files[@]}" 2>/dev/null
 }
 
 # List prices per million tokens: input, 5-minute cache write, 1-hour cache
