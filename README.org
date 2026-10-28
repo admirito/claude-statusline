@@ -179,6 +179,10 @@ events and schedules a wake-up when a rate limit window resets or the cache
 expires, so most of the line is live without it. The countdowns are not: they
 matter while you are idle, which is exactly when no event fires.
 
+A second login run from a folder of its own, with =CLAUDE_CONFIG_DIR=, has its
+own =settings.json= in that folder. Add the same lines there, and each login's
+line shows its own account.
+
 * What it reads, and what it writes
 
 Beyond the JSON payload on stdin, the main line reads up to six files, all
@@ -190,6 +194,12 @@ read-only:
 | =~/.claude.json=                       | email, billing type, legacy auto-compact setting |
 | =~/.claude/settings.json= and project settings | the auto-compact setting            |
 | managed settings                      | the same, if an administrator set one: =/etc/claude-code/= on Linux, =/Library/Application Support/ClaudeCode/= on macOS, with any =managed-settings.d/= drop-ins |
+
+With =CLAUDE_CONFIG_DIR= set, each =~/.claude/= path in this section means that
+folder instead, and =~/.claude.json= means =.claude.json= inside it. That is
+where Claude Code keeps them, and it passes the variable on to the status line,
+unless =CLAUDE_CODE_SUBPROCESS_ENV_SCRUB= is set: that removes it, and the
+script then reads the default places.
 
 It touches your credentials file because that is the only place the plan tier is
 recorded, and it takes exactly one string from it. Nothing leaves the machine

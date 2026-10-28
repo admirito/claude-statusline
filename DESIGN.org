@@ -104,8 +104,9 @@ hard block sits closer to the end than the compaction trigger does.
 
 =autoCompactEnabled= is resolved the way Claude Code resolves it: any settings
 file that defines it wins in precedence order, otherwise the legacy value in
-=~/.claude.json=, otherwise enabled. The =DISABLE_AUTO_COMPACT= and
-=DISABLE_COMPACT= environment variables force it off.
+the global config (=~/.claude.json=), otherwise enabled. The
+=DISABLE_AUTO_COMPACT= and =DISABLE_COMPACT= environment variables force it
+off.
 
 Both token figures use one formatter that picks its unit from the magnitude, so
 =1000000= renders =1M= rather than =1000K= and a future window size stays correct.
@@ -584,6 +585,13 @@ Found while building this, all of them the kind that pass a happy-path test:
 21. *=label= is a jq keyword.* On jq 1.6, =… as $label= is a syntax error
     (later versions accept it), and with stderr discarded the rows simply did
     not appear.
+22. *A second login keeps its account elsewhere.* =CLAUDE_CONFIG_DIR= runs a
+    login from a folder of its own and moves the global config into it, as
+    =.claude.json=, where by default it sits beside =~/.claude= as
+    =~/.claude.json=. Read from the default places by name, such a login's
+    badge named the default login's account, in the one cell meant to say
+    which account is in use. Claude Code passes the variable on to the status
+    line, so the script reads the folder Claude Code reads.
 
 * Known limitations
 
@@ -617,6 +625,10 @@ Found while building this, all of them the kind that pass a happy-path test:
 - A live brief is stored with its colour escapes in it, so the file is not
   pleasant to =cat=. Storing it plain would mean re-rendering it against a
   palette that may have changed, for no gain.
+- With =CLAUDE_CODE_SUBPROCESS_ENV_SCRUB= set, Claude Code removes
+  =CLAUDE_CONFIG_DIR= from the commands it runs, the status line among them,
+  so for a login run from a folder of its own the script reads the default
+  folder: its account, its settings and its agent colours.
 - Agent rows: the quiet and wait times count from the first run that saw the
   state, so they start late when the panel was not being drawn.
 - Agent rows: a cold fork's rebuild can be much smaller than its context, since

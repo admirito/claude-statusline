@@ -311,6 +311,16 @@ effort_glyph() {
     esac
 }
 
+# Where Claude Code keeps the user's own files: the configuration directory,
+# ~/.claude, and the global config, ~/.claude.json, beside it rather than in
+# it. CLAUDE_CONFIG_DIR, which runs a second login side by side, moves both:
+# the directory to that path, and the global config inside it. Claude Code
+# passes the variable on to the status line. Read from ~/.claude by name, such
+# a login's line showed the default login's account. Empty counts as unset, as
+# Claude Code counts it for the global config.
+CONFIG_DIR=${CLAUDE_CONFIG_DIR:-$HOME/.claude}
+GLOBAL_CONFIG=${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json
+
 # Where Claude Code looks for managed settings: the file, then the drop-ins
 # beside it in alphabetical order, merged so that a later file wins. One system
 # directory per platform; the other one does not exist.
@@ -436,7 +446,7 @@ agent_colour() {
 # the miss was then kept in the agent state as "-" and never retried.
 definition_colour() {  # $1 agent type  $2 project directory
     local f files=()
-    for f in "$2/.claude/agents"/*.md "$HOME/.claude/agents"/*.md; do
+    for f in "$2/.claude/agents"/*.md "$CONFIG_DIR/agents"/*.md; do
         [ -f "$f" ] && [ -r "$f" ] && files+=("$f")
     done
     (( ${#files[@]} > 0 )) || return 0
@@ -832,7 +842,7 @@ agent_pr() {  # $1 directory  $2 branch -> p_num p_state
 agent_settings() {  # $1 project directory
     local files f kind a b c d e
     files=(/dev/null)
-    for f in "$HOME/.claude.json" "$HOME/.claude/settings.json" \
+    for f in "$GLOBAL_CONFIG" "$CONFIG_DIR/settings.json" \
              "$1/.claude/settings.json" "$1/.claude/settings.local.json"; do
         [ -r "$f" ] && files+=("$f")
     done
@@ -1361,11 +1371,11 @@ done < <(jq -r '
 # billingType fallback that exists for exactly that case.
 #
 # autoCompactEnabled resolves as "any settings file that defines it wins, in
-# precedence order, else the legacy global config in ~/.claude.json, else true",
-# so ~/.claude.json leads the list and managed policy ends it. /dev/null leads
+# precedence order, else the legacy value in the global config, else true", so
+# the global config leads the list and managed policy ends it. /dev/null leads
 # the argument list so jq never falls back to reading stdin.
-CFG=("$HOME/.claude/.credentials.json" "$HOME/.claude.json"
-     "$HOME/.claude/settings.json")
+CFG=("$CONFIG_DIR/.credentials.json" "$GLOBAL_CONFIG"
+     "$CONFIG_DIR/settings.json")
 [ -n "$P_proj_dir" ] && CFG+=("$P_proj_dir/.claude/settings.json"
                               "$P_proj_dir/.claude/settings.local.json")
 while IFS= read -r f; do CFG+=("$f"); done < <(managed_settings_files)
