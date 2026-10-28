@@ -1385,8 +1385,11 @@ for f in "${CFG[@]}"; do [ -r "$f" ] && READABLE+=("$f"); done
 while IFS=$'\t' read -r k v; do
     [ -n "$k" ] && printf -v "A_$k" '%s' "$v"
 done < <(jq -s -r '
-  def firstnn(f): [.[] | f] | map(select(. != null)) | (.[0] // "");
+  # Plain values only: @tsv fails on an object or an array, and with it every
+  # row, so one field of an odd shape blanked the whole badge.
+  def firstnn(f): [.[] | f | scalars | select(. != null)] | (.[0] // "");
   [ ["sub",     firstnn(.claudeAiOauth.subscriptionType)]
+  , ["otype",   firstnn(.oauthAccount.organizationType)]
   , ["billing", firstnn(.oauthAccount.billingType)]
   , ["org",     firstnn(.oauthAccount.organizationName)]
   , ["email",   firstnn(.oauthAccount.emailAddress)]
@@ -1395,8 +1398,22 @@ done < <(jq -s -r '
   ] | .[] | @tsv' "${READABLE[@]}" 2>/dev/null)
 
 # ------------------------------------------------------- identity bracket ---
+# The plan, from the best source at hand. The credentials file names the tier,
+# but on macOS Claude Code keeps the credentials in the Keychain, which a
+# status line has no business reading, and writes the file only when the
+# Keychain refuses. Next is the organization type in the global config, for
+# the four names Claude Code itself maps to a plan. Last is the billing type,
+# which cannot tell Pro from Max and takes any account with an organization
+# for Team; a personal Max account has one too, so on macOS it read Team.
+case $A_otype in
+    claude_max|claude_pro|claude_team|claude_enterprise)
+        ORG_PLAN=${A_otype#claude_} ;;
+    *)  ORG_PLAN="" ;;
+esac
 if [ -n "$A_sub" ]; then
     PLAN=$A_sub
+elif [ -n "$ORG_PLAN" ]; then
+    PLAN=$ORG_PLAN
 else
     case $A_billing in
         stripe_subscription|stripe_subscription_contracted|apple_subscription|google_play_subscription)

@@ -190,8 +190,8 @@ read-only:
 
 | File                                  | For                                        |
 |---------------------------------------+--------------------------------------------|
-| =~/.claude/.credentials.json=          | =subscriptionType=, to label the plan       |
-| =~/.claude.json=                       | email, billing type, legacy auto-compact setting |
+| =~/.claude/.credentials.json=          | =subscriptionType=, to label the plan, where the file exists |
+| =~/.claude.json=                       | email, organization and billing type, legacy auto-compact setting |
 | =~/.claude/settings.json= and project settings | the auto-compact setting            |
 | managed settings                      | the same, if an administrator set one: =/etc/claude-code/= on Linux, =/Library/Application Support/ClaudeCode/= on macOS, with any =managed-settings.d/= drop-ins |
 
@@ -201,12 +201,15 @@ where Claude Code keeps them, and it passes the variable on to the status line,
 unless =CLAUDE_CODE_SUBPROCESS_ENV_SCRUB= is set: that removes it, and the
 script then reads the default places.
 
-It touches your credentials file because that is the only place the plan tier is
-recorded, and it takes exactly one string from it. Nothing leaves the machine
-and the main line makes no network call. If you would rather it did not, delete
-=~/.claude/.credentials.json= from the =CFG= list near the top of the account
-block; the plan badge then falls back to billing type, which cannot tell Pro
-from Max.
+It touches your credentials file because the plan tier is recorded there, and
+it takes exactly one string from it. On macOS Claude Code keeps the credentials
+in the Keychain, which the script leaves alone, and writes the file only when
+the Keychain refuses. Without the file the plan comes from the organization
+type in =~/.claude.json=, and failing that from the billing type, which cannot
+tell Pro from Max. Nothing leaves the machine and the main line makes no
+network call. If you would rather it did not read the file, delete its entry
+from the =CFG= list near the top of the account block; the plan then comes
+from the organization type, as on macOS.
 
 The agent rows read, also read-only: the files Claude Code keeps for each
 agent beside the session transcript, a small metadata file and the agent's own

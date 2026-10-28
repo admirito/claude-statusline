@@ -592,6 +592,15 @@ Found while building this, all of them the kind that pass a happy-path test:
     badge named the default login's account, in the one cell meant to say
     which account is in use. Claude Code passes the variable on to the status
     line, so the script reads the folder Claude Code reads.
+23. *On macOS there is usually no credentials file.* Claude Code keeps the
+    credentials in the Keychain there and writes the file only when the
+    Keychain refuses, so the plan tier the file names is missing. The
+    billing type the badge fell back to cannot tell Pro from Max and takes
+    any account with an organization for Team, and a personal Max account
+    has one, so it read Team. The organization type in the global config
+    names the plan, =claude_max= and the like, and comes between the two.
+    The Keychain is not read: a status line has no business there, and a
+    read can prompt.
 
 * Known limitations
 

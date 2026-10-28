@@ -48,7 +48,8 @@ which BSD sed on macOS does not understand.
 Cover at least: a fresh session (no `rate_limits`,
 no `prompt_cache`), a fully populated payload, every conditional alarm firing at
 once, a 200K window, a model with no `effort` field, `CLAUDE_CONFIG_DIR` set to
-a second login's folder, and the degenerate inputs above.
+a second login's folder, a login with no credentials file (as on macOS), and
+the degenerate inputs above.
 
 For the agent rows, build a `tasks` payload whose `transcript_path` points at a
 directory laid out as Claude Code lays it out (`<session>/subagents/agent-<id>.jsonl`
